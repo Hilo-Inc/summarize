@@ -10,6 +10,7 @@
 
 - npm packaging: publish CLI with `pnpm publish` so `@steipete/summarize-core` is version-pinned in published metadata (no `workspace:*` in registry package).
 - CLI help: surface `summarize refresh-free` in `summarize help` output.
+- CLI: report CLI provider timeouts explicitly, including the duration, command, and a `--timeout` hint instead of collapsing them into generic exec failures (#100, thanks @christophsturm).
 
 ## 0.11.0 - 2026-02-14
 
