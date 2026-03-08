@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/Users/truth/www/summarize && summarize \"https://www.youtube.com/live/f-LefLRK2MM\" --youtube auto --length medium --verbose 2>&1)",
+      "Bash(npx summarize https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp --verbose)",
+      "Bash(npx tsx src/cli.ts https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp)",
+      "Bash(ls .env*)",
+      "Read(//c/Users/truth/**)",
+      "Read(//c/Users/truth/.config/**)",
+      "Bash(ls c:/Users/truth/www/summarize/.env*)",
+      "Bash(node dist/cli.js https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp)",
+      "Bash(\"C:/Users/truth/.summarize/venv/Scripts/yt-dlp.exe\" --version)",
+      "Bash(npx tsx src/cli.ts https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp --extract)",
+      "Bash(npx tsx src/cli.ts https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp --json)",
+      "Bash(npx tsx src/cli.ts https://www.youtube.com/watch?v=kZbMABuzn9U --youtube yt-dlp --json --no-cache)"
+    ]
+  }
+}
