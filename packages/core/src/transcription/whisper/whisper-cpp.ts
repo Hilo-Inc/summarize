@@ -203,7 +203,9 @@ async function isWhisperCliAvailable(): Promise<boolean> {
       captureOutput: false,
     });
     proc.on("error", () => resolve(false));
-    proc.on("close", (code) => resolve(code === 0));
+    // Accept any exit code — deprecated main.exe returns 1 from --help but works fine.
+    // The "error" event already catches missing binaries (ENOENT).
+    proc.on("close", () => resolve(true));
   });
 }
 

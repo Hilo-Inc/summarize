@@ -74,6 +74,13 @@ export async function runCli(
     : { ...inputEnv };
   const { config: bootstrapConfig } = loadSummarizeConfig({ env: envForRun });
   envForRun = mergeConfigEnv({ env: envForRun, config: bootstrapConfig });
+  // Sync config-provided env vars to process.env so that modules reading process.env directly
+  // (e.g. whisper-cpp binary/model path resolution) see them.
+  for (const [key, value] of Object.entries(envForRun)) {
+    if (typeof value === "string" && !(key in inputEnv && typeof inputEnv[key] === "string" && inputEnv[key].trim().length > 0)) {
+      process.env[key] = value;
+    }
+  }
   const env = envForRun;
 
   if (handleHelpRequest({ normalizedArgv, envForRun, stdout, stderr })) {
