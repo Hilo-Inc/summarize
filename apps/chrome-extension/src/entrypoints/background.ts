@@ -1,18 +1,7 @@
 import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
 import { shouldPreferUrlMode } from "@steipete/summarize-core/content/url";
 import { defineBackground } from "wxt/utils/define-background";
-import { parseSseEvent, type SseSlidesData } from "../../../../src/shared/sse-events.js";
-import {
-  deleteArtifact,
-  getArtifactRecord,
-  listArtifacts,
-  parseArtifact,
-  upsertArtifact,
-} from "../automation/artifacts-store";
-import {
-  getNativeInputGuardError,
-  updateNativeInputArmedTabs,
-} from "../automation/native-input-guard";
+import type { SseSlidesData } from "../../../../src/shared/sse-events.js";
 import { readAgentResponse } from "../lib/agent-response";
 import { buildChatPageContent } from "../lib/chat-context";
 import { buildDaemonRequestBody, buildSummarizeRequestBody } from "../lib/daemon-payload";
@@ -20,7 +9,6 @@ import { createDaemonRecovery, isDaemonUnreachableError } from "../lib/daemon-re
 import { createDaemonStatusTracker } from "../lib/daemon-status";
 import { logExtensionEvent } from "../lib/extension-logs";
 import { loadSettings, patchSettings } from "../lib/settings";
-import { parseSseStream } from "../lib/sse";
 import { isYouTubeWatchUrl } from "../lib/youtube-url";
 import {
   canSummarizeUrl,
@@ -29,6 +17,12 @@ import {
   type ExtractResponse,
 } from "./background/content-script-bridge";
 import { daemonHealth, daemonPing, friendlyFetchError } from "./background/daemon-client";
+import { createHoverController, type HoverToBg } from "./background/hover-controller";
+import {
+  createRuntimeActionsHandler,
+  type ArtifactsRequest,
+  type NativeInputRequest,
+} from "./background/runtime-actions";
 
 type PanelToBg =
   | { type: "panel:ready" }
@@ -87,40 +81,6 @@ type BgToPanel =
       error?: string;
     }
   | { type: "ui:cache"; requestId: string; ok: boolean; cache?: PanelCachePayload };
-
-type HoverToBg =
-  | {
-      type: "hover:summarize";
-      requestId: string;
-      url: string;
-      title: string | null;
-      token?: string;
-    }
-  | { type: "hover:abort"; requestId: string };
-
-type BgToHover =
-  | { type: "hover:chunk"; requestId: string; url: string; text: string }
-  | { type: "hover:done"; requestId: string; url: string }
-  | { type: "hover:error"; requestId: string; url: string; message: string };
-
-type NativeInputRequest = {
-  type: "automation:native-input";
-  payload: {
-    action: "click" | "type" | "press" | "keydown" | "keyup";
-    x?: number;
-    y?: number;
-    text?: string;
-    key?: string;
-  };
-};
-
-type NativeInputResponse = { ok: true } | { ok: false; error: string };
-type ArtifactsRequest = {
-  type: "automation:artifacts";
-  requestId: string;
-  action?: string;
-  payload?: unknown;
-};
 
 type UiState = {
   panelOpen: boolean;
@@ -292,117 +252,6 @@ function urlsMatch(a: string, b: string) {
   return boundaryMatch(left, right) || boundaryMatch(right, left);
 }
 
-function resolveKeyCode(key: string): { code: string; keyCode: number; text?: string } {
-  const named: Record<string, number> = {
-    Enter: 13,
-    Tab: 9,
-    Backspace: 8,
-    Escape: 27,
-    ArrowLeft: 37,
-    ArrowUp: 38,
-    ArrowRight: 39,
-    ArrowDown: 40,
-    Delete: 46,
-    Home: 36,
-    End: 35,
-    PageUp: 33,
-    PageDown: 34,
-    Space: 32,
-  };
-  if (named[key]) {
-    return { code: key, keyCode: named[key] };
-  }
-  if (key.length === 1) {
-    const upper = key.toUpperCase();
-    return { code: upper, keyCode: upper.charCodeAt(0), text: key };
-  }
-  return { code: key, keyCode: 0 };
-}
-
-async function dispatchNativeInput(
-  tabId: number,
-  payload: NativeInputRequest["payload"],
-): Promise<NativeInputResponse> {
-  const hasPermission = await chrome.permissions.contains({ permissions: ["debugger"] });
-  if (!hasPermission) {
-    return { ok: false, error: "Debugger permission not granted." };
-  }
-
-  try {
-    await chrome.debugger.attach({ tabId }, "1.3");
-  } catch (err) {
-    if (!(err instanceof Error) || !err.message.includes("already attached")) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-  }
-
-  const send = (method: string, params: Record<string, unknown>) =>
-    chrome.debugger.sendCommand({ tabId }, method, params);
-
-  try {
-    switch (payload.action) {
-      case "click": {
-        const x = payload.x ?? 0;
-        const y = payload.y ?? 0;
-        await send("Input.dispatchMouseEvent", {
-          type: "mousePressed",
-          button: "left",
-          clickCount: 1,
-          x,
-          y,
-        });
-        await send("Input.dispatchMouseEvent", {
-          type: "mouseReleased",
-          button: "left",
-          clickCount: 1,
-          x,
-          y,
-        });
-        return { ok: true };
-      }
-      case "type": {
-        const text = payload.text ?? "";
-        if (!text) return { ok: false, error: "Missing text" };
-        await send("Input.insertText", { text });
-        return { ok: true };
-      }
-      case "press":
-      case "keydown":
-      case "keyup": {
-        const key = payload.key ?? "";
-        if (!key) return { ok: false, error: "Missing key" };
-        const { code, keyCode, text } = resolveKeyCode(key);
-        const sendKey = async (type: string) =>
-          send("Input.dispatchKeyEvent", {
-            type,
-            key,
-            code,
-            text,
-            windowsVirtualKeyCode: keyCode,
-            nativeVirtualKeyCode: keyCode,
-          });
-        if (payload.action === "press") {
-          await sendKey("keyDown");
-          await sendKey("keyUp");
-          return { ok: true };
-        }
-        await sendKey(payload.action === "keydown" ? "keyDown" : "keyUp");
-        return { ok: true };
-      }
-      default:
-        return { ok: false, error: "Unknown action" };
-    }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  } finally {
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch {
-      // ignore
-    }
-  }
-}
-
 export default defineBackground(() => {
   const panelSessions = new Map<number, PanelSession>();
   const lastMediaProbeByTab = new Map<number, string>();
@@ -445,12 +294,20 @@ export default defineBackground(() => {
   // postMessage → content-script → runtime bridge.
   const nativeInputArmedTabs = new Set<number>();
 
-  const resolveLogLevel = (event: string) => {
+  function resolveLogLevel(event: string) {
     const normalized = event.toLowerCase();
     if (normalized.includes("error") || normalized.includes("failed")) return "error";
     if (normalized.includes("warn")) return "warn";
     return "verbose";
-  };
+  }
+  const runtimeActionsHandler = createRuntimeActionsHandler({
+    armedTabs: nativeInputArmedTabs,
+  });
+  const hoverController = createHoverController({
+    hoverControllersByTabId,
+    buildDaemonRequestBody,
+    resolveLogLevel,
+  });
 
   const isPanelOpen = (session: PanelSession) => {
     if (!session.panelOpen) return false;
@@ -695,14 +552,6 @@ export default defineBackground(() => {
   };
   const sendStatus = (session: PanelSession, status: string) =>
     void send(session, { type: "ui:status", status });
-
-  const sendHover = async (tabId: number, msg: BgToHover) => {
-    try {
-      await chrome.tabs.sendMessage(tabId, msg);
-    } catch {
-      // ignore (tab closed / navigated / no content script)
-    }
-  };
 
   const emitState = async (
     session: PanelSession,
@@ -1243,162 +1092,6 @@ export default defineBackground(() => {
     }
   };
 
-  const abortHoverForTab = (tabId: number, requestId?: string) => {
-    const existing = hoverControllersByTabId.get(tabId);
-    if (!existing) return;
-    if (requestId && existing.requestId !== requestId) return;
-    existing.controller.abort();
-    hoverControllersByTabId.delete(tabId);
-  };
-
-  const resolveHoverTabId = async (
-    sender: chrome.runtime.MessageSender,
-  ): Promise<number | null> => {
-    if (sender.tab?.id) return sender.tab.id;
-    const senderUrl = typeof sender.url === "string" ? sender.url : null;
-    const tabs = await chrome.tabs.query({});
-    if (senderUrl) {
-      const match = tabs.find((tab) => tab.url === senderUrl);
-      if (match?.id) return match.id;
-    }
-    const active = tabs.find((tab) => tab.active);
-    return active?.id ?? null;
-  };
-
-  const runHoverSummarize = async (
-    tabId: number,
-    msg: HoverToBg & { type: "hover:summarize" },
-    opts?: { onStart?: (result: { ok: boolean; error?: string }) => void },
-  ) => {
-    abortHoverForTab(tabId);
-    let didNotifyStart = false;
-    const notifyStart = (result: { ok: boolean; error?: string }) => {
-      if (didNotifyStart) return;
-      didNotifyStart = true;
-      opts?.onStart?.(result);
-    };
-
-    // Keep localhost daemon calls out of content-script/page context to avoid Chrome’s “Local network access”
-    // prompt per-origin. Background SW owns `fetch("http://127.0.0.1:8787/...")` for hover summaries.
-    const controller = new AbortController();
-    hoverControllersByTabId.set(tabId, { requestId: msg.requestId, controller });
-
-    const isStillActive = () => {
-      const current = hoverControllersByTabId.get(tabId);
-      return Boolean(current && current.requestId === msg.requestId && !controller.signal.aborted);
-    };
-
-    const settings = await loadSettings();
-    const logHover = (event: string, detail?: Record<string, unknown>) => {
-      if (!settings.extendedLogging) return;
-      const payload = detail ? { event, ...detail } : { event };
-      const detailPayload = detail ?? {};
-      logExtensionEvent({
-        event,
-        detail: detailPayload,
-        scope: "hover:bg",
-        level: resolveLogLevel(event),
-      });
-      console.debug("[summarize][hover:bg]", payload);
-    };
-    const token = msg.token?.trim() || settings.token.trim();
-    if (!token) {
-      notifyStart({ ok: false, error: "Setup required (missing token)" });
-      await sendHover(tabId, {
-        type: "hover:error",
-        requestId: msg.requestId,
-        url: msg.url,
-        message: "Setup required (missing token)",
-      });
-      return;
-    }
-
-    try {
-      logHover("start", { tabId, requestId: msg.requestId, url: msg.url });
-      const base = buildDaemonRequestBody({
-        extracted: { url: msg.url, title: msg.title, text: "", truncated: false },
-        settings,
-      });
-      const body = {
-        ...base,
-        length: "short",
-        prompt: settings.hoverPrompt,
-        mode: "url",
-        timeout: "30s",
-      };
-
-      const res = await fetch("http://127.0.0.1:8787/v1/summarize", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      const json = (await res.json()) as { ok?: boolean; id?: string; error?: string };
-      if (!res.ok || !json?.ok || !json.id) {
-        throw new Error(json?.error || `${res.status} ${res.statusText}`);
-      }
-
-      if (!isStillActive()) return;
-      notifyStart({ ok: true });
-      logHover("stream-start", { tabId, requestId: msg.requestId, url: msg.url, runId: json.id });
-
-      const streamRes = await fetch(`http://127.0.0.1:8787/v1/summarize/${json.id}/events`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: controller.signal,
-      });
-      if (!streamRes.ok) throw new Error(`${streamRes.status} ${streamRes.statusText}`);
-      if (!streamRes.body) throw new Error("Missing stream body");
-
-      for await (const raw of parseSseStream(streamRes.body)) {
-        if (!isStillActive()) return;
-        const event = parseSseEvent(raw);
-        if (!event) continue;
-
-        if (event.event === "chunk") {
-          await sendHover(tabId, {
-            type: "hover:chunk",
-            requestId: msg.requestId,
-            url: msg.url,
-            text: event.data.text,
-          });
-        } else if (event.event === "error") {
-          throw new Error(event.data.message);
-        } else if (event.event === "done") {
-          break;
-        }
-      }
-
-      if (!isStillActive()) return;
-      logHover("done", { tabId, requestId: msg.requestId, url: msg.url });
-      await sendHover(tabId, { type: "hover:done", requestId: msg.requestId, url: msg.url });
-    } catch (err) {
-      if (!isStillActive()) return;
-      notifyStart({
-        ok: false,
-        error: friendlyFetchError(err, "Hover summarize failed"),
-      });
-      logHover("error", {
-        tabId,
-        requestId: msg.requestId,
-        url: msg.url,
-        message: err instanceof Error ? err.message : String(err),
-      });
-      await sendHover(tabId, {
-        type: "hover:error",
-        requestId: msg.requestId,
-        url: msg.url,
-        message: friendlyFetchError(err, "Hover summarize failed"),
-      });
-    } finally {
-      notifyStart({ ok: false, error: "Hover summarize aborted" });
-      abortHoverForTab(tabId, msg.requestId);
-    }
-  };
-
   const handlePanelMessage = (session: PanelSession, raw: PanelToBg) => {
     if (!raw || typeof raw !== "object" || typeof (raw as { type?: unknown }).type !== "string") {
       return;
@@ -1935,172 +1628,10 @@ export default defineBackground(() => {
       sender,
       sendResponse,
     ): boolean | undefined => {
-      if (!raw || typeof raw !== "object" || typeof (raw as { type?: unknown }).type !== "string") {
-        return;
-      }
-
-      const type = (raw as { type: string }).type;
-      if (type === "automation:native-input-arm") {
-        const msg = raw as { tabId?: number; enabled?: boolean };
-        updateNativeInputArmedTabs({
-          armedTabs: nativeInputArmedTabs,
-          senderHasTab: Boolean(sender.tab),
-          tabId: msg.tabId,
-          enabled: msg.enabled,
-        });
-        return;
-      }
-      if (type === "automation:native-input") {
-        const msg = raw as NativeInputRequest;
-        void (async () => {
-          const tabId = sender.tab?.id;
-          const guardError = getNativeInputGuardError({
-            armedTabs: nativeInputArmedTabs,
-            senderTabId: tabId,
-          });
-          if (guardError) {
-            try {
-              sendResponse({
-                ok: false,
-                error: guardError,
-              } satisfies NativeInputResponse);
-            } catch {
-              // ignore
-            }
-            return;
-          }
-          const result = await dispatchNativeInput(tabId, msg.payload);
-          try {
-            sendResponse(result);
-          } catch {
-            // ignore
-          }
-        })();
-        return true;
-      }
-      if (type === "automation:artifacts") {
-        const msg = raw as ArtifactsRequest;
-        void (async () => {
-          const tabId = sender.tab?.id;
-          if (!tabId) {
-            try {
-              sendResponse({ ok: false, error: "Missing sender tab" });
-            } catch {
-              // ignore
-            }
-            return;
-          }
-
-          const payload = (msg.payload ?? {}) as {
-            fileName?: string;
-            content?: unknown;
-            mimeType?: string;
-            asBase64?: boolean;
-          };
-
-          try {
-            if (msg.action === "listArtifacts") {
-              const records = await listArtifacts(tabId);
-              sendResponse({
-                ok: true,
-                result: records.map(({ fileName, mimeType, size, updatedAt }) => ({
-                  fileName,
-                  mimeType,
-                  size,
-                  updatedAt,
-                })),
-              });
-              return;
-            }
-
-            if (msg.action === "getArtifact") {
-              if (!payload.fileName) throw new Error("Missing fileName");
-              const record = await getArtifactRecord(tabId, payload.fileName);
-              if (!record) throw new Error(`Artifact not found: ${payload.fileName}`);
-              const isText =
-                record.mimeType.startsWith("text/") ||
-                record.mimeType === "application/json" ||
-                record.fileName.endsWith(".json");
-              const value = payload.asBase64 ? record : isText ? parseArtifact(record) : record;
-              sendResponse({ ok: true, result: value });
-              return;
-            }
-
-            if (msg.action === "createOrUpdateArtifact") {
-              if (!payload.fileName) throw new Error("Missing fileName");
-              const record = await upsertArtifact(tabId, {
-                fileName: payload.fileName,
-                content: payload.content,
-                mimeType: payload.mimeType,
-                contentBase64:
-                  typeof payload.content === "object" &&
-                  payload.content &&
-                  "contentBase64" in payload.content
-                    ? (payload.content as { contentBase64?: string }).contentBase64
-                    : undefined,
-              });
-              sendResponse({
-                ok: true,
-                result: {
-                  fileName: record.fileName,
-                  mimeType: record.mimeType,
-                  size: record.size,
-                  updatedAt: record.updatedAt,
-                },
-              });
-              return;
-            }
-
-            if (msg.action === "deleteArtifact") {
-              if (!payload.fileName) throw new Error("Missing fileName");
-              const deleted = await deleteArtifact(tabId, payload.fileName);
-              sendResponse({ ok: true, result: { ok: deleted } });
-              return;
-            }
-
-            throw new Error(`Unknown artifact action: ${msg.action ?? "unknown"}`);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            try {
-              sendResponse({ ok: false, error: message });
-            } catch {
-              // ignore
-            }
-          }
-        })();
-        return true;
-      }
-      if (type === "hover:summarize") {
-        const msg = raw as HoverToBg & { type: "hover:summarize" };
-        void (async () => {
-          const tabId = await resolveHoverTabId(sender);
-          if (!tabId) {
-            try {
-              sendResponse({ ok: false, error: "Missing sender tab" });
-            } catch {
-              // ignore
-            }
-            return;
-          }
-
-          const startResult = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-            void runHoverSummarize(tabId, msg, { onStart: resolve });
-          });
-          try {
-            sendResponse(startResult);
-          } catch {
-            // ignore
-          }
-        })();
-        return true;
-      }
-
-      if (type === "hover:abort") {
-        const tabId = sender.tab?.id;
-        if (!tabId) return;
-        abortHoverForTab(tabId, (raw as HoverToBg & { type: "hover:abort" }).requestId);
-        return;
-      }
+      return (
+        runtimeActionsHandler(raw, sender, sendResponse) ??
+        hoverController.handleRuntimeMessage(raw, sender, sendResponse)
+      );
     },
   );
 
@@ -2154,7 +1685,7 @@ export default defineBackground(() => {
   chrome.tabs.onRemoved.addListener((tabId) => {
     cachedExtracts.delete(tabId);
     lastMediaProbeByTab.delete(tabId);
-    hoverControllersByTabId.delete(tabId);
+    hoverController.abortHoverForTab(tabId);
     panelCacheByTabId.delete(tabId);
     nativeInputArmedTabs.delete(tabId);
   });

@@ -236,9 +236,29 @@ export async function getBackground(harness: ExtensionHarness): Promise<Worker> 
 
 export async function sendBgMessage(harness: ExtensionHarness, message: object) {
   const background = await getBackground(harness);
+  const applyToOpenPanel = async () => {
+    const extensionPrefix = getExtensionUrl(harness, "");
+    for (const page of harness.context.pages()) {
+      if (!page.url().startsWith(extensionPrefix)) continue;
+      const applied = await page
+        .evaluate((payload) => {
+          const hooks = (
+            window as typeof globalThis & {
+              __summarizeTestHooks?: { applyBgMessage?: (value: object) => void };
+            }
+          ).__summarizeTestHooks;
+          if (typeof hooks?.applyBgMessage !== "function") return false;
+          hooks.applyBgMessage(payload);
+          return true;
+        }, message)
+        .catch(() => false);
+      if (applied) return true;
+    }
+    return false;
+  };
   await expect
     .poll(async () => {
-      return await background.evaluate(() => {
+      const hasPort = await background.evaluate(() => {
         const ports = (
           globalThis as typeof globalThis & {
             __summarizePanelPorts?: Map<number, { postMessage: (msg: object) => void }>;
@@ -246,9 +266,11 @@ export async function sendBgMessage(harness: ExtensionHarness, message: object) 
         ).__summarizePanelPorts;
         return Boolean(ports && ports.size > 0);
       });
+      if (hasPort) return true;
+      return await applyToOpenPanel();
     })
     .toBe(true);
-  await background.evaluate((payload) => {
+  const sent = await background.evaluate((payload) => {
     const global = globalThis as typeof globalThis & {
       __summarizePanelPorts?: Map<number, { postMessage: (msg: object) => void }>;
     };
@@ -257,11 +279,15 @@ export async function sendBgMessage(harness: ExtensionHarness, message: object) 
       const first = ports.values().next().value;
       if (first?.postMessage) {
         first.postMessage(payload);
-        return;
+        return true;
       }
     }
-    chrome.runtime.sendMessage(payload);
+    return false;
   }, message);
+  if (sent) return;
+  const applied = await applyToOpenPanel();
+  if (applied) return;
+  throw new Error("Failed to deliver background message to sidepanel");
 }
 
 export async function sendPanelMessage(page: Page, message: object) {

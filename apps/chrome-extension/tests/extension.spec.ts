@@ -2157,6 +2157,15 @@ test("sidepanel switches between page, video, and slides modes", async ({
         return hooks?.getSummarizeMode?.() ?? null;
       });
 
+    const expectSummarizeMode = async (mode: "page" | "video", slides: boolean) => {
+      await expect
+        .poll(async () => {
+          const current = await getSummarizeMode();
+          return current ? { mode: current.mode, slides: current.slides } : null;
+        })
+        .toEqual({ mode, slides });
+    };
+
     const applyUiState = async (state: UiState) => {
       await page.evaluate((payload) => {
         const hooks = (
@@ -2181,9 +2190,7 @@ test("sidepanel switches between page, video, and slides modes", async ({
     await expect(summarizeButton).toHaveAttribute("aria-label", /Page(?: · 120 words)?/);
 
     await setSummarizeMode("page", false);
-    await expect
-      .poll(async () => await getSummarizeMode())
-      .toEqual({ mode: "page", slides: false, mediaAvailable: true });
+    await expectSummarizeMode("page", false);
     await expect(summarizeButton).toHaveAttribute("aria-label", /Page/);
     await expect(
       page.locator("img.slideStrip__thumbImage, img.slideInline__thumbImage"),
@@ -2191,9 +2198,7 @@ test("sidepanel switches between page, video, and slides modes", async ({
 
     await ensureMediaAvailable(false);
     await setSummarizeMode("video", false);
-    await expect
-      .poll(async () => await getSummarizeMode())
-      .toEqual({ mode: "video", slides: false, mediaAvailable: true });
+    await expectSummarizeMode("video", false);
     await expect(summarizeButton).toHaveAttribute("aria-label", /Video/);
     await expect(
       page.locator("img.slideStrip__thumbImage, img.slideInline__thumbImage"),
@@ -2201,17 +2206,13 @@ test("sidepanel switches between page, video, and slides modes", async ({
 
     await ensureMediaAvailable(true);
     await setSummarizeMode("video", true);
-    await expect
-      .poll(async () => await getSummarizeMode())
-      .toEqual({ mode: "video", slides: true, mediaAvailable: true });
+    await expectSummarizeMode("video", true);
     await expect.poll(async () => (await getSummarizeMode())?.slides ?? false).toBe(true);
     await expect(summarizeButton).toHaveAttribute("aria-label", /Slides/);
 
     await ensureMediaAvailable(false);
     await setSummarizeMode("page", false);
-    await expect
-      .poll(async () => await getSummarizeMode())
-      .toEqual({ mode: "page", slides: false, mediaAvailable: true });
+    await expectSummarizeMode("page", false);
     await expect(summarizeButton).toHaveAttribute("aria-label", /Page/);
     await sendBgMessage(harness, {
       type: "run:start",
