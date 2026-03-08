@@ -1,10 +1,9 @@
 import { load } from "cheerio";
-import type { TranscriptSegment } from "../../link-preview/types.js";
-import type { ProviderContext, ProviderFetchOptions, ProviderResult } from "../types.js";
 import {
   isTwitterBroadcastUrl,
   isTwitterStatusUrl,
 } from "../../link-preview/content/twitter-utils.js";
+import type { TranscriptSegment } from "../../link-preview/types.js";
 import { isDirectMediaUrl } from "../../url.js";
 import { normalizeTranscriptText } from "../normalize.js";
 import {
@@ -14,7 +13,11 @@ import {
   vttToSegments,
 } from "../parse.js";
 import { resolveTranscriptionConfig, type TranscriptionConfig } from "../transcription-config.js";
-import { resolveTranscriptionAvailability } from "./transcription-start.js";
+import type { ProviderContext, ProviderFetchOptions, ProviderResult } from "../types.js";
+import {
+  buildMissingTranscriptionProviderResult,
+  resolveTranscriptProviderCapabilities,
+} from "./transcription-capability.js";
 
 export const canHandle = (): boolean => true;
 
@@ -109,17 +112,15 @@ export const fetchTranscript = async (
     };
   }
 
-  const transcriptionAvailability = await resolveTranscriptionAvailability({
+  const transcriptionCapabilities = await resolveTranscriptProviderCapabilities({
     transcription,
+    ytDlpPath: options.ytDlpPath,
   });
-  if (!transcriptionAvailability.hasAnyProvider) {
-    return {
-      text: null,
-      source: null,
+  if (!transcriptionCapabilities.canTranscribe) {
+    return buildMissingTranscriptionProviderResult({
       attemptedProviders,
       metadata: { provider: "generic", kind: "twitter", reason: "missing_transcription_keys" },
-      notes: "Missing transcription provider (install whisper-cpp or set OPENAI_API_KEY/FAL_KEY)",
-    };
+    });
   }
 
   attemptedProviders.push("yt-dlp");
@@ -359,13 +360,12 @@ async function fetchDirectMediaTranscript({
     return null;
   }
 
-  const transcriptionAvailability = await resolveTranscriptionAvailability({
+  const transcriptionCapabilities = await resolveTranscriptProviderCapabilities({
     transcription,
+    ytDlpPath: options.ytDlpPath,
   });
-  if (!transcriptionAvailability.hasAnyProvider) {
-    notes.push(
-      "Missing transcription provider (install whisper-cpp or set GROQ_API_KEY/OPENAI_API_KEY/FAL_KEY)",
-    );
+  if (!transcriptionCapabilities.canTranscribe) {
+    notes.push(transcriptionCapabilities.missingProviderNote);
     return null;
   }
 

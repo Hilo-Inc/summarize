@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchTranscript } from "../packages/core/src/content/transcript/providers/podcast.js";
+import { stubMissingTranscriptionEnv } from "./helpers/transcription-env.js";
 
 const baseOptions = {
   fetch: vi.fn() as unknown as typeof fetch,
@@ -13,6 +14,10 @@ const baseOptions = {
 };
 
 describe("podcast transcript provider module", () => {
+  beforeEach(() => {
+    stubMissingTranscriptionEnv();
+  });
+
   it("returns a helpful message only when transcription is required but unavailable", async () => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item><enclosure url="https://example.com/episode.mp3" type="audio/mpeg"/></item></channel></rss>`;
 

@@ -28,17 +28,14 @@ export const ProgressKind = {
   BirdDone: "bird-done",
 } as const;
 
+export type CloudTranscriptionProviderHint = "groq" | "assemblyai" | "gemini" | "openai" | "fal";
+
 export type TranscriptionProviderHint =
   | "cpp"
   | "onnx"
-  | "groq"
-  | "groq->openai"
-  | "groq->fal"
-  | "groq->openai->fal"
-  | "openai"
-  | "fal"
-  | "openai->fal"
-  | "unknown";
+  | "unknown"
+  | CloudTranscriptionProviderHint
+  | `${CloudTranscriptionProviderHint}->${string}`;
 
 /** Public progress events emitted by link preview fetchers. */
 export type LinkPreviewProgressEvent =
@@ -121,8 +118,14 @@ export type LinkPreviewProgressEvent =
     }
   | { kind: "nitter-start"; url: string }
   | { kind: "nitter-done"; url: string; ok: boolean; textBytes: number | null }
-  | { kind: "bird-start"; url: string }
-  | { kind: "bird-done"; url: string; ok: boolean; textBytes: number | null };
+  | { kind: "bird-start"; url: string; client?: "xurl" | "bird" | null }
+  | {
+      kind: "bird-done";
+      url: string;
+      client?: "xurl" | "bird" | null;
+      ok: boolean;
+      textBytes: number | null;
+    };
 
 export interface FirecrawlScrapeResult {
   markdown: string;
@@ -147,7 +150,7 @@ export type BirdTweetMedia = {
   kind: "video" | "audio";
   urls: string[];
   preferredUrl: string | null;
-  source: "extended_entities" | "card" | "entities";
+  source: "extended_entities" | "card" | "entities" | "xurl";
 };
 
 export type BirdTweetPayload = {
@@ -156,6 +159,7 @@ export type BirdTweetPayload = {
   author?: { username?: string; name?: string };
   createdAt?: string;
   media?: BirdTweetMedia | null;
+  client?: "xurl" | "bird";
 };
 
 export type ReadTweetWithBird = (args: {
@@ -181,6 +185,8 @@ export interface LinkPreviewDeps {
   transcription?: TranscriptionConfig | null;
   falApiKey?: string | null;
   groqApiKey?: string | null;
+  assemblyaiApiKey?: string | null;
+  geminiApiKey?: string | null;
   openaiApiKey?: string | null;
   convertHtmlToMarkdown: ConvertHtmlToMarkdown | null;
   transcriptCache: TranscriptCache | null;

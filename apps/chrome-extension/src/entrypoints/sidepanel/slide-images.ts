@@ -2,6 +2,7 @@ import { logExtensionEvent } from "../../lib/extension-logs";
 import { loadSettings, type Settings } from "../../lib/settings";
 
 const SLIDE_THUMB_SELECTOR = ".slideStrip__thumb, .slideInline__thumb, .slideGallery__thumb";
+const SLIDE_IMAGE_VISIBILITY_RECHECK_DELAYS_MS = [120, 320, 900];
 
 export function normalizeSlideImageUrl(
   imageUrl: string | null | undefined,
@@ -29,6 +30,7 @@ export function createSlideImageLoader(
   const slideImageCache = new Map<string, { objectUrl: string; lastUsed: number }>();
   const slideImagePending = new Map<string, Promise<string | null>>();
   const slideImageRetryTimers = new WeakMap<HTMLImageElement, number>();
+  const slideImageVisibilityTimers = new WeakMap<HTMLImageElement, number>();
   const slideImageObserverEntries = new WeakMap<HTMLImageElement, { imageUrl: string }>();
   const maxCacheEntries = Math.max(1, options.maxCacheEntries ?? 160);
   let cacheUseCounter = 0;
@@ -59,12 +61,26 @@ export function createSlideImageLoader(
     parent?.classList.remove("isPlaceholder");
   };
 
+  const markSlideImagePending = (img: HTMLImageElement) => {
+    img.dataset.loaded = "false";
+    const parent = img.closest<HTMLElement>(SLIDE_THUMB_SELECTOR);
+    parent?.classList.add("isPlaceholder");
+  };
+
   const clearCache = () => {
     for (const cached of slideImageCache.values()) {
       URL.revokeObjectURL(cached.objectUrl);
     }
     slideImageCache.clear();
     slideImagePending.clear();
+  };
+
+  const clearVisibilityTimer = (img: HTMLImageElement) => {
+    const existingTimer = slideImageVisibilityTimers.get(img);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+      slideImageVisibilityTimers.delete(img);
+    }
   };
 
   const resolveSlideImageUrl = async (imageUrl: string): Promise<string | null> => {
@@ -134,11 +150,13 @@ export function createSlideImageLoader(
 
   const setSlideImage = async (img: HTMLImageElement, imageUrl: string) => {
     if (!imageUrl) return;
+    clearVisibilityTimer(img);
     const existingTimer = slideImageRetryTimers.get(img);
     if (existingTimer) {
       window.clearTimeout(existingTimer);
       slideImageRetryTimers.delete(img);
     }
+    markSlideImagePending(img);
     const cached = slideImageCache.get(imageUrl);
     if (cached) {
       if (img.src !== cached.objectUrl) img.src = cached.objectUrl;
@@ -201,6 +219,36 @@ export function createSlideImageLoader(
         )
       : null;
 
+  const isNearViewport = (img: HTMLImageElement) => {
+    const rect = img.getBoundingClientRect();
+    const viewportHeight =
+      globalThis.innerHeight || document.documentElement?.clientHeight || Number.MAX_SAFE_INTEGER;
+    return (
+      rect.width > 0 && rect.height > 0 && rect.bottom >= -320 && rect.top <= viewportHeight + 320
+    );
+  };
+
+  const scheduleVisibilityRecheck = (img: HTMLImageElement, imageUrl: string, attemptIndex = 0) => {
+    clearVisibilityTimer(img);
+    const delayMs = SLIDE_IMAGE_VISIBILITY_RECHECK_DELAYS_MS[attemptIndex];
+    if (typeof delayMs !== "number") return;
+    const timer = window.setTimeout(() => {
+      slideImageVisibilityTimers.delete(img);
+      if (img.dataset.slideImageUrl !== imageUrl) return;
+      if (img.dataset.slideObserveArmed !== "true") return;
+      if (!img.isConnected) return;
+      if (isNearViewport(img)) {
+        slideImageObserverEntries.delete(img);
+        slideImageObserver?.unobserve(img);
+        img.dataset.slideObserveArmed = "false";
+        void setSlideImage(img, imageUrl);
+        return;
+      }
+      scheduleVisibilityRecheck(img, imageUrl, attemptIndex + 1);
+    }, delayMs);
+    slideImageVisibilityTimers.set(img, timer);
+  };
+
   const observe = (img: HTMLImageElement, imageUrl: string) => {
     if (!imageUrl) return;
     const isSameUrl = img.dataset.slideImageUrl === imageUrl;
@@ -208,6 +256,7 @@ export function createSlideImageLoader(
       if (img.dataset.loaded === "true" && img.src) return;
       if (img.dataset.slideObserveArmed === "true") return;
     }
+    clearVisibilityTimer(img);
     const hadVisibleImage = img.dataset.loaded === "true" && Boolean(img.src);
     img.dataset.slideImageUrl = imageUrl;
     if (!hadVisibleImage) {
@@ -231,9 +280,18 @@ export function createSlideImageLoader(
       void setSlideImage(img, imageUrl);
       return;
     }
+    const alreadyNearViewport = isNearViewport(img);
+    if (alreadyNearViewport) {
+      img.dataset.slideObserveArmed = "false";
+      slideImageObserverEntries.delete(img);
+      slideImageObserver.unobserve(img);
+      void setSlideImage(img, imageUrl);
+      return;
+    }
     img.dataset.slideObserveArmed = "true";
     slideImageObserverEntries.set(img, { imageUrl });
     slideImageObserver.observe(img);
+    scheduleVisibilityRecheck(img, imageUrl);
   };
 
   return { observe, clearCache };

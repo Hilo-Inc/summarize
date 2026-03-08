@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ProviderFetchOptions } from "../../types.js";
 import {
   isFfmpegAvailable,
   MAX_OPENAI_UPLOAD_BYTES,
@@ -14,6 +13,7 @@ import {
   resolveTranscriptionConfig,
   type TranscriptionConfig,
 } from "../../transcription-config.js";
+import type { ProviderFetchOptions } from "../../types.js";
 import { resolveTranscriptionStartInfo } from "../transcription-start.js";
 import { MAX_REMOTE_MEDIA_BYTES, TRANSCRIPTION_TIMEOUT_MS } from "./constants.js";
 
@@ -37,6 +37,8 @@ export async function transcribeMediaUrl({
   filenameHint,
   durationSecondsHint,
   groqApiKey,
+  assemblyaiApiKey,
+  geminiApiKey,
   openaiApiKey,
   falApiKey,
   notes,
@@ -49,6 +51,8 @@ export async function transcribeMediaUrl({
   filenameHint: string;
   durationSecondsHint: number | null;
   groqApiKey?: string | null;
+  assemblyaiApiKey?: string | null;
+  geminiApiKey?: string | null;
   openaiApiKey?: string | null;
   falApiKey?: string | null;
   notes: string[];
@@ -63,6 +67,8 @@ export async function transcribeMediaUrl({
     env,
     transcription,
     groqApiKey,
+    assemblyaiApiKey,
+    geminiApiKey,
     openaiApiKey,
     falApiKey,
   });
@@ -128,6 +134,8 @@ export async function transcribeMediaUrl({
       mediaType,
       filename,
       groqApiKey: effectiveTranscription.groqApiKey,
+      assemblyaiApiKey: effectiveTranscription.assemblyaiApiKey,
+      geminiApiKey: effectiveTranscription.geminiApiKey,
       openaiApiKey: effectiveTranscription.openaiApiKey,
       falApiKey: effectiveTranscription.falApiKey,
       totalDurationSeconds: durationSecondsHint,
@@ -183,6 +191,8 @@ export async function transcribeMediaUrl({
       mediaType,
       filename,
       groqApiKey: effectiveTranscription.groqApiKey,
+      assemblyaiApiKey: effectiveTranscription.assemblyaiApiKey,
+      geminiApiKey: effectiveTranscription.geminiApiKey,
       openaiApiKey: effectiveTranscription.openaiApiKey,
       falApiKey: effectiveTranscription.falApiKey,
       totalDurationSeconds: durationSecondsHint,
@@ -242,6 +252,8 @@ export async function transcribeMediaUrl({
       mediaType,
       filename,
       groqApiKey: effectiveTranscription.groqApiKey,
+      assemblyaiApiKey: effectiveTranscription.assemblyaiApiKey,
+      geminiApiKey: effectiveTranscription.geminiApiKey,
       openaiApiKey: effectiveTranscription.openaiApiKey,
       falApiKey: effectiveTranscription.falApiKey,
       totalDurationSeconds: probedDurationSeconds,

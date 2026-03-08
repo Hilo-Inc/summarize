@@ -6,8 +6,18 @@ import type {
   CliProvider,
   SummarizeConfig,
 } from "./config.js";
-import type { LiteLlmCatalog } from "./pricing/litellm.js";
 import { normalizeGatewayStyleModelId, parseGatewayStyleModelId } from "./llm/model-id.js";
+import {
+  DEFAULT_AUTO_CLI_ORDER,
+  DEFAULT_CLI_MODELS,
+  envHasRequiredKey,
+  isVideoUnderstandingCapableModelId,
+  parseCliProviderName,
+  requiredEnvForCliProvider,
+  resolveRequiredEnvForModelId,
+  type RequiredModelEnv,
+} from "./llm/provider-capabilities.js";
+import type { LiteLlmCatalog } from "./pricing/litellm.js";
 import {
   resolveLiteLlmMaxInputTokensForModelId,
   resolveLiteLlmPricingForModelId,
@@ -35,18 +45,7 @@ export type AutoModelAttempt = {
   llmModelId: string | null;
   openrouterProviders: string[] | null;
   forceOpenRouter: boolean;
-  requiredEnv:
-    | "XAI_API_KEY"
-    | "OPENAI_API_KEY"
-    | "NVIDIA_API_KEY"
-    | "GEMINI_API_KEY"
-    | "ANTHROPIC_API_KEY"
-    | "OPENROUTER_API_KEY"
-    | "Z_AI_API_KEY"
-    | "CLI_CLAUDE"
-    | "CLI_CODEX"
-    | "CLI_GEMINI"
-    | "CLI_AGENT";
+  requiredEnv: RequiredModelEnv;
   debug: string;
 };
 
@@ -147,39 +146,27 @@ function normalizeSlugForMatch(slug: string): string {
 const DEFAULT_RULES: AutoRule[] = [
   {
     when: ["video"],
-    candidates: ["google/gemini-3-flash-preview", "google/gemini-2.5-flash-lite-preview-09-2025"],
+    candidates: ["google/gemini-3-flash", "google/gemini-2.5-flash-lite-preview-09-2025"],
   },
   {
     when: ["image"],
-    candidates: [
-      "google/gemini-3-flash-preview",
-      "openai/gpt-5-mini",
-      "anthropic/claude-sonnet-4-5",
-    ],
+    candidates: ["google/gemini-3-flash", "openai/gpt-5-mini", "anthropic/claude-sonnet-4-5"],
   },
   {
     when: ["website", "youtube", "text"],
     bands: [
       {
         token: { max: 50_000 },
-        candidates: [
-          "google/gemini-3-flash-preview",
-          "openai/gpt-5-mini",
-          "anthropic/claude-sonnet-4-5",
-        ],
+        candidates: ["google/gemini-3-flash", "openai/gpt-5-mini", "anthropic/claude-sonnet-4-5"],
       },
       {
         token: { max: 200_000 },
-        candidates: [
-          "google/gemini-3-flash-preview",
-          "openai/gpt-5-mini",
-          "anthropic/claude-sonnet-4-5",
-        ],
+        candidates: ["google/gemini-3-flash", "openai/gpt-5-mini", "anthropic/claude-sonnet-4-5"],
       },
       {
         candidates: [
           "xai/grok-4-fast-non-reasoning",
-          "google/gemini-3-flash-preview",
+          "google/gemini-3-flash",
           "openai/gpt-5-mini",
           "anthropic/claude-sonnet-4-5",
         ],
@@ -188,30 +175,17 @@ const DEFAULT_RULES: AutoRule[] = [
   },
   {
     when: ["file"],
-    candidates: [
-      "google/gemini-3-flash-preview",
-      "openai/gpt-5-mini",
-      "anthropic/claude-sonnet-4-5",
-    ],
+    candidates: ["google/gemini-3-flash", "openai/gpt-5-mini", "anthropic/claude-sonnet-4-5"],
   },
   {
     candidates: [
-      "google/gemini-3-flash-preview",
+      "google/gemini-3-flash",
       "openai/gpt-5-mini",
       "anthropic/claude-sonnet-4-5",
       "xai/grok-4-fast-non-reasoning",
     ],
   },
 ];
-
-const DEFAULT_CLI_MODELS: Record<CliProvider, string> = {
-  claude: "sonnet",
-  codex: "gpt-5.2",
-  gemini: "gemini-3-flash-preview",
-  agent: "gpt-5.2",
-};
-
-const DEFAULT_AUTO_CLI_ORDER: CliProvider[] = ["claude", "gemini", "codex", "agent"];
 
 export type ResolvedCliAutoFallbackConfig = {
   enabled: boolean;
@@ -290,14 +264,8 @@ function parseCliCandidate(
     .split("/")
     .map((entry) => entry.trim());
   if (parts.length < 2) return null;
-  const provider = parts[1]?.toLowerCase();
-  if (
-    provider !== "claude" &&
-    provider !== "codex" &&
-    provider !== "gemini" &&
-    provider !== "agent"
-  )
-    return null;
+  const provider = parseCliProviderName(parts[1] ?? "");
+  if (!provider) return null;
   const model = parts.slice(2).join("/").trim();
   return { provider, model: model.length > 0 ? model : null };
 }
@@ -310,47 +278,14 @@ function normalizeOpenRouterModelId(raw: string): string | null {
 }
 
 function requiredEnvForCandidate(modelId: string): AutoModelAttempt["requiredEnv"] {
-  if (isCandidateCli(modelId)) {
-    const parsed = parseCliCandidate(modelId);
-    if (!parsed) return "CLI_CLAUDE";
-    return parsed.provider === "codex"
-      ? "CLI_CODEX"
-      : parsed.provider === "gemini"
-        ? "CLI_GEMINI"
-        : parsed.provider === "agent"
-          ? "CLI_AGENT"
-          : "CLI_CLAUDE";
-  }
-  if (isCandidateOpenRouter(modelId)) return "OPENROUTER_API_KEY";
-  const parsed = parseGatewayStyleModelId(normalizeGatewayStyleModelId(modelId));
-  return parsed.provider === "xai"
-    ? "XAI_API_KEY"
-    : parsed.provider === "google"
-      ? "GEMINI_API_KEY"
-      : parsed.provider === "anthropic"
-        ? "ANTHROPIC_API_KEY"
-        : parsed.provider === "zai"
-          ? "Z_AI_API_KEY"
-          : parsed.provider === "nvidia"
-            ? "NVIDIA_API_KEY"
-            : "OPENAI_API_KEY";
+  return resolveRequiredEnvForModelId(modelId);
 }
 
 export function envHasKey(
   env: Record<string, string | undefined>,
   requiredEnv: AutoModelAttempt["requiredEnv"],
 ): boolean {
-  if (requiredEnv === "GEMINI_API_KEY") {
-    return Boolean(
-      env.GEMINI_API_KEY?.trim() ||
-      env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-      env.GOOGLE_API_KEY?.trim(),
-    );
-  }
-  if (requiredEnv === "Z_AI_API_KEY") {
-    return Boolean(env.Z_AI_API_KEY?.trim() || env.ZAI_API_KEY?.trim());
-  }
-  return Boolean(env[requiredEnv]?.trim());
+  return envHasRequiredKey(env, requiredEnv);
 }
 
 function tokenMatchesBand({
@@ -496,15 +431,6 @@ function estimateCostUsd({
   return Number.isFinite(cost) ? cost : null;
 }
 
-function isVideoUnderstandingCapable(modelId: string): boolean {
-  try {
-    const parsed = parseGatewayStyleModelId(normalizeGatewayStyleModelId(modelId));
-    return parsed.provider === "google";
-  } catch {
-    return false;
-  }
-}
-
 export function buildAutoModelAttempts(input: AutoSelectionInput): AutoModelAttempt[] {
   const baseCandidates = resolveRuleCandidates({
     kind: input.kind,
@@ -536,7 +462,7 @@ export function buildAutoModelAttempts(input: AutoSelectionInput): AutoModelAtte
 
     const shouldSkipForVideo =
       input.requiresVideoUnderstanding &&
-      (explicitOpenRouter || explicitCli || !isVideoUnderstandingCapable(modelRaw));
+      (explicitOpenRouter || explicitCli || !isVideoUnderstandingCapableModelId(modelRaw));
     if (shouldSkipForVideo) {
       continue;
     }

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.2 - Unreleased
+## 0.12.0 - Unreleased
 
 ### Features
 
@@ -8,8 +8,37 @@
 
 ### Fixes
 
+- Transcription: add AssemblyAI as a first-class remote provider across direct media, podcast/RSS, and yt-dlp YouTube fallback; refactor remote fallback ordering, expand config/env support (`ASSEMBLYAI_API_KEY`, legacy `apiKeys.assemblyai`), and add AssemblyAI unit + live coverage (#126).
+- X/Twitter: prefer `xurl` for tweet extraction when installed, fall back to `bird`, preserve long-form/article text plus media URLs, add live `xurl` extraction/media coverage, and replace the stale dead-`bird` install tip with a current X CLI recommendation (#70).
+- Models: make daemon agent `artifacts` schemas Gemini-safe, improve Google empty-response handling with preview-to-stable fallback, and switch CLI/auto Gemini defaults away from brittle preview behavior (#82, #96).
+- Agents: expand model auto-resolution errors with checked models, missing env/CLI setup, and daemon restart guidance (#107).
+- Daemon: support multiple saved extension tokens, migrate legacy single-token configs, and accept any configured token for auth (#116).
+- Chrome extension: harden side-panel slides so SSE keepalives no longer false-time out, seeded placeholders no longer block pending/cached slide runs, retries can start a fresh summarize+slides run, and reruns replace stale slide state.
+- Chrome extension: refactor side-panel navigation/run attachment policy so late summary/slide runs no longer attach to the wrong page after tab or URL switches, and expand headless regression coverage for pending-run resume and slide-mode transitions.
+- Transcription: add Gemini audio/video transcription support across direct media, podcast/RSS, and yt-dlp YouTube fallback, including Files API uploads for larger media plus new Gemini live coverage (#89).
 - npm packaging: publish CLI with `pnpm publish` so `@steipete/summarize-core` is version-pinned in published metadata (no `workspace:*` in registry package).
+- Slides: detect WezTerm as an iTerm-compatible terminal for inline slide images in `--slides` mode. (#133) — thanks @doodaaatimmy-creator.
 - CLI help: surface `summarize refresh-free` in `summarize help` output.
+- CLI: report CLI provider timeouts explicitly, including the duration, command, and a `--timeout` hint instead of collapsing them into generic exec failures (#100, thanks @christophsturm).
+- Daemon: restrict CORS responses to trusted extension and localhost origins, with regression coverage for allowed and denied `Origin` headers (#108, thanks @sebastiondev).
+- Transcription: chunk oversized Groq Whisper uploads with ffmpeg in file mode instead of failing out on files above the 30MB limit (#134, thanks @WinnCook).
+- Docs: tighten landing-page mobile layout so hero, cards, code blocks, and nav stay readable on narrow screens (#118, thanks @Acidias).
+- Release: build macOS x64 Bun artifacts and add regression coverage for Homebrew formula rewrites during dual-arch releases (#122, thanks @androidshu).
+- YouTube: tighten hostname validation across core, slides, and extension helpers so attacker-controlled lookalike hosts are no longer treated as YouTube URLs (#91, thanks @RinZ27).
+- Config: honor `zai.baseUrl` config fallback for blank env values and keep Z.AI base URL overrides working outside the summary flow (#102, thanks @liuy).
+- Chrome extension: tighten options and sidepanel UI spacing, copy actions, and advanced-controls layout for a cleaner panel experience (#86, thanks @morozRed).
+- Slides: warn in summary mode when `--slides` dependencies are missing, and document required local installs for `ffmpeg`, `yt-dlp`, and optional `tesseract`.
+- Docs: fix broken docs index links by setting an empty Jekyll `baseurl` (#113, thanks @Youpen-y).
+- Models: preserve model id casing after the provider prefix so OpenAI-compatible proxies can route exact names correctly (#128, thanks @WinnCook).
+- Cache: give extract entries with unavailable transcripts the same short retry TTL as negative transcript cache entries, so transient Apify failures can recover (#115, thanks @gluneau).
+- Daemon: apply the saved env snapshot to `process.env` before `daemon run` starts so child tools inherit the right PATH and API/tool config under launchd/systemd (#99, thanks @heyalchang).
+- Chrome automation: require sidepanel arming before debugger-backed native input can run in a tab, and auto-disarm after browser JS execution ends (#129, thanks @omnicoder9).
+- Media setup: fix the local whisper.cpp install hint to use the current Homebrew formula name `whisper-cpp` (#92, thanks @zerone0x).
+- CLI output: cap markdown render width on very wide terminals by default, with a `--width` override for manual control (#119, thanks @howardpen9).
+- Slides: size inline slide images from terminal width instead of keeping them pinned to 32 columns, capped at 2x the previous width while preserving `COLUMNS` fallback behavior (#125, #135, thanks @WinnCook).
+- Shell completions: add Fish shell completions for the current CLI flags and option values (#95, thanks @fbehrens).
+- Bun fetch: only opt into compressed HTML/YouTube responses when running under Bun, and retry link-preview fetches with `Accept-Encoding: identity` after Bun decompression failures (#105, thanks @maciej).
+- Daemon: support `cli/...` models in chat and agent endpoints, including CLI auto-fallback when no API-key transport is available (#109, thanks @jetm).
 
 ## 0.11.0 - 2026-02-14
 

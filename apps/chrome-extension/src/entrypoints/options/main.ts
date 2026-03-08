@@ -1,18 +1,15 @@
-import {
-  deleteSkill,
-  getSkill,
-  listSkills,
-  type Skill,
-  saveSkill,
-} from "../../automation/skills-store";
 import { buildUserScriptsGuidance, getUserScriptsStatus } from "../../automation/userscripts";
 import { readPresetOrCustomValue, resolvePresetOrCustom } from "../../lib/combo";
 import { defaultSettings, loadSettings, saveSettings } from "../../lib/settings";
 import { applyTheme, type ColorMode, type ColorScheme } from "../../lib/theme";
 import { mountCheckbox } from "../../ui/zag-checkbox";
+import { createDaemonStatusChecker } from "./daemon-status";
 import { createLogsViewer } from "./logs-viewer";
+import { createModelPresetsController } from "./model-presets";
 import { mountOptionsPickers } from "./pickers";
 import { createProcessesViewer } from "./processes-viewer";
+import { createSkillsController } from "./skills-controller";
+import { createOptionsTabs } from "./tab-controller";
 
 declare const __SUMMARIZE_GIT_HASH__: string;
 declare const __SUMMARIZE_VERSION__: string;
@@ -22,18 +19,6 @@ function byId<T extends HTMLElement>(id: string): T {
   if (!el) throw new Error(`Missing #${id}`);
   return el as T;
 }
-
-const DAEMON_STATUS_TIMEOUT_MS = 5000;
-const DAEMON_STATUS_RETRY_DELAY_MS = 400;
-const DAEMON_STATUS_MAX_ATTEMPTS = 2;
-
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
-
-const shouldRetryDaemon = (err: unknown) => {
-  if (err instanceof DOMException && err.name === "AbortError") return true;
-  const message = err instanceof Error ? err.message : "";
-  return message.toLowerCase() === "failed to fetch";
-};
 
 const formEl = byId<HTMLFormElement>("form");
 const statusEl = byId<HTMLSpanElement>("status");
@@ -105,7 +90,6 @@ const tabButtons = Array.from(tabsRoot.querySelectorAll<HTMLButtonElement>("[dat
 const tabPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-tab-panel]"));
 
 const tabStorageKey = "summarize:options-tab";
-const tabIds = new Set(tabButtons.map((button) => button.dataset.tab).filter(Boolean));
 
 let autoValue = defaultSettings.autoSummarize;
 let chatEnabledValue = defaultSettings.chatEnabled;
@@ -117,13 +101,6 @@ let slidesOcrEnabledValue = defaultSettings.slidesOcrEnabled;
 let extendedLoggingValue = defaultSettings.extendedLogging;
 let autoCliFallbackValue = defaultSettings.autoCliFallback;
 
-let skillsCache: Skill[] = [];
-let skillsFiltered: Skill[] = [];
-let skillsSearchQuery = "";
-let editingSkill: Skill | null = null;
-let importConflicts: Array<{ skill: Skill; selected: boolean }> = [];
-let importedSkills: Skill[] = [];
-
 let isInitializing = true;
 let saveTimer = 0;
 let saveInFlight = false;
@@ -132,11 +109,6 @@ let saveSequence = 0;
 
 const setStatus = (text: string) => {
   statusEl.textContent = text;
-};
-
-const resolveActiveTab = (): string | null => {
-  const active = tabButtons.find((button) => button.getAttribute("aria-selected") === "true");
-  return active?.dataset.tab ?? null;
 };
 
 const logsLevelInputs = Array.from(
@@ -178,70 +150,25 @@ const processesViewer = createProcessesViewer({
   isActive: () => resolveActiveTab() === "processes",
 });
 
-const setActiveTab = (tabId: string) => {
-  if (!tabIds.has(tabId)) return;
-  for (const button of tabButtons) {
-    const isActive = button.dataset.tab === tabId;
-    button.setAttribute("aria-selected", isActive ? "true" : "false");
-    button.tabIndex = isActive ? 0 : -1;
-  }
-  for (const panel of tabPanels) {
-    const isActive = panel.dataset.tabPanel === tabId;
-    panel.hidden = !isActive;
-  }
-  localStorage.setItem(tabStorageKey, tabId);
-  if (tabId === "logs") {
-    logsViewer.handleTabActivated();
-  } else {
-    logsViewer.handleTabDeactivated();
-  }
-  if (tabId === "processes") {
-    processesViewer.handleTabActivated();
-  } else {
-    processesViewer.handleTabDeactivated();
-  }
-};
-
-const storedTab = localStorage.getItem(tabStorageKey);
-const initialTab = storedTab && tabIds.has(storedTab) ? storedTab : "general";
-setActiveTab(initialTab);
-
-for (const button of tabButtons) {
-  button.addEventListener("click", () => {
-    const tabId = button.dataset.tab;
-    if (tabId) setActiveTab(tabId);
-  });
-}
-
-tabsRoot.addEventListener("keydown", (event) => {
-  if (
-    !(event instanceof KeyboardEvent) ||
-    !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
-  ) {
-    return;
-  }
-  event.preventDefault();
-  const activeIndex = tabButtons.findIndex(
-    (button) => button.getAttribute("aria-selected") === "true",
-  );
-  if (activeIndex < 0) return;
-  const lastIndex = tabButtons.length - 1;
-  let nextIndex = activeIndex;
-  if (event.key === "ArrowLeft") {
-    nextIndex = activeIndex === 0 ? lastIndex : activeIndex - 1;
-  } else if (event.key === "ArrowRight") {
-    nextIndex = activeIndex === lastIndex ? 0 : activeIndex + 1;
-  } else if (event.key === "Home") {
-    nextIndex = 0;
-  } else if (event.key === "End") {
-    nextIndex = lastIndex;
-  }
-  const nextButton = tabButtons[nextIndex];
-  if (!nextButton) return;
-  const tabId = nextButton.dataset.tab;
-  if (!tabId) return;
-  setActiveTab(tabId);
-  nextButton.focus();
+const { resolveActiveTab } = createOptionsTabs({
+  root: tabsRoot,
+  buttons: tabButtons,
+  panels: tabPanels,
+  storageKey: tabStorageKey,
+  onLogsActiveChange: (active) => {
+    if (active) {
+      logsViewer.handleTabActivated();
+    } else {
+      logsViewer.handleTabDeactivated();
+    }
+  },
+  onProcessesActiveChange: (active) => {
+    if (active) {
+      processesViewer.handleTabActivated();
+    } else {
+      processesViewer.handleTabDeactivated();
+    }
+  },
 });
 
 let statusTimer = 0;
@@ -250,6 +177,19 @@ const flashStatus = (text: string, duration = 900) => {
   setStatus(text);
   statusTimer = window.setTimeout(() => setStatus(""), duration);
 };
+
+const skillsController = createSkillsController({
+  elements: {
+    searchEl: skillsSearchEl,
+    listEl: skillsListEl,
+    emptyEl: skillsEmptyEl,
+    conflictsEl: skillsConflictsEl,
+    exportBtn: skillsExportBtn,
+    importBtn: skillsImportBtn,
+  },
+  setStatus,
+  flashStatus,
+});
 
 const scheduleAutoSave = (delay = 500) => {
   if (isInitializing) return;
@@ -272,7 +212,7 @@ const saveNow = async () => {
     const current = await loadSettings();
     await saveSettings({
       token: tokenEl.value || defaultSettings.token,
-      model: readCurrentModelValue(),
+      model: modelPresets.readCurrentValue(),
       length: current.length,
       language: readPresetOrCustomValue({
         presetValue: languagePresetEl.value,
@@ -345,256 +285,16 @@ const resolveExtensionVersion = () => {
   return injected || chrome?.runtime?.getManifest?.().version || "";
 };
 
-const setDaemonStatus = (text: string, state?: "ok" | "warn" | "error") => {
-  const textEl = daemonStatusEl.querySelector<HTMLElement>(".daemonStatus__text");
-  if (textEl) {
-    textEl.textContent = text;
-  } else {
-    daemonStatusEl.textContent = text;
-  }
-  if (state) {
-    daemonStatusEl.dataset.state = state;
-  } else {
-    delete daemonStatusEl.dataset.state;
-  }
-};
+const { checkDaemonStatus } = createDaemonStatusChecker({
+  statusEl: daemonStatusEl,
+  getExtensionVersion: resolveExtensionVersion,
+});
 
-let daemonCheckId = 0;
-const fetchWithRetry = async (url: string, options: RequestInit = {}) => {
-  for (let attempt = 0; attempt < DAEMON_STATUS_MAX_ATTEMPTS; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), DAEMON_STATUS_TIMEOUT_MS);
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } catch (error) {
-      if (attempt < DAEMON_STATUS_MAX_ATTEMPTS - 1 && shouldRetryDaemon(error)) {
-        window.clearTimeout(timeout);
-        await sleep(DAEMON_STATUS_RETRY_DELAY_MS * (attempt + 1));
-        continue;
-      }
-      throw error;
-    } finally {
-      window.clearTimeout(timeout);
-    }
-  }
-  throw new Error("health failed");
-};
-
-async function checkDaemonStatus(token: string) {
-  const trimmedToken = token.trim();
-  if (!trimmedToken) {
-    setDaemonStatus("Add token to verify daemon connection", "warn");
-    return;
-  }
-
-  daemonCheckId += 1;
-  const checkId = daemonCheckId;
-  setDaemonStatus("Checking daemon…");
-
-  try {
-    const res = await fetchWithRetry("http://127.0.0.1:8787/health");
-    if (checkId !== daemonCheckId) return;
-    if (!res.ok) {
-      setDaemonStatus(
-        `Daemon error (${res.status} ${res.statusText}) — run \`summarize daemon status\``,
-        "error",
-      );
-      return;
-    }
-    const json = (await res.json()) as { version?: unknown };
-    const daemonVersion = typeof json.version === "string" ? json.version.trim() : "";
-    const extVersion = resolveExtensionVersion();
-    const versionNote = daemonVersion ? `v${daemonVersion}` : "version unknown";
-
-    if (trimmedToken) {
-      try {
-        const ping = await fetchWithRetry("http://127.0.0.1:8787/v1/ping", {
-          headers: { Authorization: `Bearer ${trimmedToken}` },
-        });
-        if (checkId !== daemonCheckId) return;
-        if (!ping.ok) {
-          setDaemonStatus(
-            `Daemon ${versionNote} (token mismatch) — update token in side panel and Save`,
-            "warn",
-          );
-          return;
-        }
-      } catch {
-        if (checkId !== daemonCheckId) return;
-        setDaemonStatus(
-          `Daemon ${versionNote} (auth failed) — update token in side panel and Save`,
-          "warn",
-        );
-        return;
-      }
-    } else {
-      setDaemonStatus(`Daemon ${versionNote} (add token to verify)`, "warn");
-      return;
-    }
-
-    if (daemonVersion && extVersion && daemonVersion !== extVersion) {
-      setDaemonStatus(`Daemon ${versionNote} (extension v${extVersion})`, "warn");
-      return;
-    }
-
-    setDaemonStatus(`Daemon ${versionNote} connected`, "ok");
-  } catch {
-    if (checkId !== daemonCheckId) return;
-    setDaemonStatus(
-      "Daemon unreachable — run `summarize daemon status` and check ~/.summarize/logs/daemon.err.log",
-      "error",
-    );
-  }
-}
-
-function setDefaultModelPresets() {
-  modelPresetEl.innerHTML = "";
-  {
-    const auto = document.createElement("option");
-    auto.value = "auto";
-    auto.textContent = "Auto";
-    modelPresetEl.append(auto);
-  }
-  {
-    const custom = document.createElement("option");
-    custom.value = "custom";
-    custom.textContent = "Custom…";
-    modelPresetEl.append(custom);
-  }
-}
-
-function setModelPlaceholderFromDiscovery(discovery: {
-  providers?: unknown;
-  localModelsSource?: unknown;
-}) {
-  const hints: string[] = ["auto"];
-  const providers = discovery.providers;
-  if (providers && typeof providers === "object") {
-    const p = providers as Record<string, unknown>;
-    if (p.openrouter === true) hints.push("free");
-    if (p.openai === true) hints.push("openai/…");
-    if (p.anthropic === true) hints.push("anthropic/…");
-    if (p.google === true) hints.push("google/…");
-    if (p.xai === true) hints.push("xai/…");
-    if (p.zai === true) hints.push("zai/…");
-    if (p.cliClaude === true) hints.push("cli/claude");
-    if (p.cliGemini === true) hints.push("cli/gemini");
-    if (p.cliCodex === true) hints.push("cli/codex");
-    if (p.cliAgent === true) hints.push("cli/agent");
-  }
-  if (discovery.localModelsSource && typeof discovery.localModelsSource === "object") {
-    hints.push("local: openai/<id>");
-  }
-  modelCustomEl.placeholder = hints.join(" / ");
-}
-
-function readCurrentModelValue(): string {
-  return readPresetOrCustomValue({
-    presetValue: modelPresetEl.value,
-    customValue: modelCustomEl.value,
-    defaultValue: defaultSettings.model,
-  });
-}
-
-function setModelValue(value: string) {
-  const next = value.trim() || defaultSettings.model;
-  const optionValues = new Set(Array.from(modelPresetEl.options).map((o) => o.value));
-  if (optionValues.has(next) && next !== "custom") {
-    modelPresetEl.value = next;
-    modelCustomEl.hidden = true;
-    return;
-  }
-  modelPresetEl.value = "custom";
-  modelCustomEl.hidden = false;
-  modelCustomEl.value = next;
-}
-
-function captureModelSelection() {
-  return {
-    presetValue: modelPresetEl.value,
-    customValue: modelCustomEl.value,
-  };
-}
-
-function restoreModelSelection(selection: { presetValue: string; customValue: string }) {
-  if (selection.presetValue === "custom") {
-    modelPresetEl.value = "custom";
-    modelCustomEl.hidden = false;
-    modelCustomEl.value = selection.customValue;
-    return;
-  }
-  const optionValues = new Set(Array.from(modelPresetEl.options).map((o) => o.value));
-  if (optionValues.has(selection.presetValue) && selection.presetValue !== "custom") {
-    modelPresetEl.value = selection.presetValue;
-    modelCustomEl.hidden = true;
-    return;
-  }
-  setModelValue(selection.presetValue);
-}
-
-async function refreshModelPresets(token: string) {
-  const selection = captureModelSelection();
-  const trimmed = token.trim();
-  if (!trimmed) {
-    setDefaultModelPresets();
-    setModelPlaceholderFromDiscovery({});
-    restoreModelSelection(selection);
-    return;
-  }
-  try {
-    const res = await fetch("http://127.0.0.1:8787/v1/models", {
-      headers: { Authorization: `Bearer ${trimmed}` },
-    });
-    if (!res.ok) {
-      setDefaultModelPresets();
-      restoreModelSelection(selection);
-      return;
-    }
-    const json = (await res.json()) as unknown;
-    if (!json || typeof json !== "object") return;
-    const obj = json as Record<string, unknown>;
-    if (obj.ok !== true) return;
-
-    setModelPlaceholderFromDiscovery({
-      providers: obj.providers,
-      localModelsSource: obj.localModelsSource,
-    });
-
-    const optionsRaw = obj.options;
-    if (!Array.isArray(optionsRaw)) return;
-
-    const options = optionsRaw
-      .map((item) => {
-        if (!item || typeof item !== "object") return null;
-        const record = item as { id?: unknown; label?: unknown };
-        const id = typeof record.id === "string" ? record.id.trim() : "";
-        const label = typeof record.label === "string" ? record.label.trim() : "";
-        if (!id) return null;
-        return { id, label };
-      })
-      .filter((x): x is { id: string; label: string } => x !== null);
-
-    if (options.length === 0) {
-      setDefaultModelPresets();
-      restoreModelSelection(selection);
-      return;
-    }
-
-    setDefaultModelPresets();
-    const seen = new Set(Array.from(modelPresetEl.options).map((o) => o.value));
-    for (const opt of options) {
-      if (seen.has(opt.id)) continue;
-      seen.add(opt.id);
-      const el = document.createElement("option");
-      el.value = opt.id;
-      el.textContent = opt.label ? `${opt.id} — ${opt.label}` : opt.id;
-      modelPresetEl.append(el);
-    }
-    restoreModelSelection(selection);
-  } catch {
-    // ignore
-  }
-}
+const modelPresets = createModelPresetsController({
+  presetEl: modelPresetEl,
+  customEl: modelCustomEl,
+  defaultValue: defaultSettings.model,
+});
 
 const languagePresets = [
   "auto",
@@ -749,385 +449,7 @@ async function requestAutomationPermissions() {
 automationPermissionsBtn.addEventListener("click", () => {
   void requestAutomationPermissions();
 });
-
-const updateSkillsEmptyState = () => {
-  skillsEmptyEl.textContent = skillsSearchQuery
-    ? "No skills match your search."
-    : "No skills created yet.";
-  skillsEmptyEl.hidden = skillsFiltered.length > 0 || importConflicts.length > 0;
-};
-
-const updateSkillDraft = (patch: Partial<Skill>) => {
-  if (!editingSkill) return;
-  editingSkill = { ...editingSkill, ...patch };
-};
-
-const renderSkills = () => {
-  skillsListEl.replaceChildren();
-  skillsConflictsEl.replaceChildren();
-
-  if (importConflicts.length > 0) {
-    skillsConflictsEl.hidden = false;
-    const title = document.createElement("div");
-    title.className = "skillName";
-    title.textContent = "Import conflicts";
-    const hint = document.createElement("div");
-    hint.className = "hint";
-    hint.textContent = "Select which skills should overwrite existing entries.";
-    const list = document.createElement("div");
-    list.className = "skillsConflictsList";
-
-    importConflicts.forEach((conflict, index) => {
-      const row = document.createElement("label");
-      row.className = "skillsConflictItem";
-
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = conflict.selected;
-      checkbox.addEventListener("change", () => {
-        importConflicts[index] = { ...conflict, selected: checkbox.checked };
-      });
-
-      const content = document.createElement("div");
-      content.style.display = "grid";
-      content.style.gap = "2px";
-
-      const name = document.createElement("div");
-      name.className = "skillName";
-      name.textContent = conflict.skill.name;
-
-      const domains = document.createElement("div");
-      domains.className = "skillDomains";
-      domains.textContent = conflict.skill.domainPatterns.join(", ");
-
-      const desc = document.createElement("div");
-      desc.className = "skillDescription";
-      desc.textContent = conflict.skill.shortDescription;
-
-      content.append(name, domains, desc);
-      row.append(checkbox, content);
-      list.append(row);
-    });
-
-    const actions = document.createElement("div");
-    actions.className = "skillsConflictActions";
-    const cancelBtn = document.createElement("button");
-    cancelBtn.type = "button";
-    cancelBtn.className = "miniButton";
-    cancelBtn.textContent = "Cancel";
-    cancelBtn.addEventListener("click", () => {
-      importConflicts = [];
-      importedSkills = [];
-      renderSkills();
-    });
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "miniButton";
-    importBtn.textContent = "Import selected";
-    importBtn.addEventListener("click", () => {
-      void performImport(importedSkills);
-    });
-    actions.append(cancelBtn, importBtn);
-
-    skillsConflictsEl.append(title, hint, list, actions);
-    updateSkillsEmptyState();
-    return;
-  }
-
-  skillsConflictsEl.hidden = true;
-
-  for (const skill of skillsFiltered) {
-    if (editingSkill && editingSkill.name === skill.name) {
-      const editor = document.createElement("div");
-      editor.className = "skillEditor";
-
-      const heading = document.createElement("div");
-      heading.className = "skillName";
-      heading.textContent = `Edit skill: ${editingSkill.name}`;
-
-      const nameLabel = document.createElement("label");
-      const nameLabelText = document.createElement("span");
-      nameLabelText.textContent = "Name";
-      const nameInput = document.createElement("input");
-      nameInput.type = "text";
-      nameInput.value = editingSkill.name;
-      nameInput.disabled = true;
-      nameLabel.append(nameLabelText, nameInput);
-
-      const domainLabel = document.createElement("label");
-      const domainLabelText = document.createElement("span");
-      domainLabelText.textContent = "Domain patterns (comma-separated)";
-      const domainInput = document.createElement("input");
-      domainInput.type = "text";
-      domainInput.value = editingSkill.domainPatterns.join(", ");
-      domainInput.addEventListener("input", () => {
-        const patterns = domainInput.value
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-        updateSkillDraft({ domainPatterns: patterns });
-      });
-      domainLabel.append(domainLabelText, domainInput);
-
-      const shortLabel = document.createElement("label");
-      const shortText = document.createElement("span");
-      shortText.textContent = "Short description";
-      const shortInput = document.createElement("input");
-      shortInput.type = "text";
-      shortInput.value = editingSkill.shortDescription;
-      shortInput.addEventListener("input", () =>
-        updateSkillDraft({ shortDescription: shortInput.value }),
-      );
-      shortLabel.append(shortText, shortInput);
-
-      const descriptionLabel = document.createElement("label");
-      const descriptionText = document.createElement("span");
-      descriptionText.textContent = "Description (Markdown)";
-      const descriptionInput = document.createElement("textarea");
-      descriptionInput.rows = 4;
-      descriptionInput.value = editingSkill.description;
-      descriptionInput.addEventListener("input", () =>
-        updateSkillDraft({ description: descriptionInput.value }),
-      );
-      descriptionLabel.append(descriptionText, descriptionInput);
-
-      const examplesLabel = document.createElement("label");
-      const examplesText = document.createElement("span");
-      examplesText.textContent = "Examples (JavaScript)";
-      const examplesInput = document.createElement("textarea");
-      examplesInput.rows = 4;
-      examplesInput.value = editingSkill.examples;
-      examplesInput.addEventListener("input", () =>
-        updateSkillDraft({ examples: examplesInput.value }),
-      );
-      examplesLabel.append(examplesText, examplesInput);
-
-      const libraryLabel = document.createElement("label");
-      const libraryText = document.createElement("span");
-      libraryText.textContent = "Library code";
-      const libraryInput = document.createElement("textarea");
-      libraryInput.rows = 8;
-      libraryInput.value = editingSkill.library;
-      libraryInput.addEventListener("input", () =>
-        updateSkillDraft({ library: libraryInput.value }),
-      );
-      libraryLabel.append(libraryText, libraryInput);
-
-      const actionRow = document.createElement("div");
-      actionRow.className = "skillActions";
-      const cancelBtn = document.createElement("button");
-      cancelBtn.type = "button";
-      cancelBtn.className = "miniButton";
-      cancelBtn.textContent = "Cancel";
-      cancelBtn.addEventListener("click", () => {
-        editingSkill = null;
-        renderSkills();
-      });
-      const saveBtn = document.createElement("button");
-      saveBtn.type = "button";
-      saveBtn.className = "miniButton";
-      saveBtn.textContent = "Save";
-      saveBtn.addEventListener("click", () => {
-        void saveEditingSkill();
-      });
-      actionRow.append(cancelBtn, saveBtn);
-
-      editor.append(
-        heading,
-        nameLabel,
-        domainLabel,
-        shortLabel,
-        descriptionLabel,
-        examplesLabel,
-        libraryLabel,
-        actionRow,
-      );
-      skillsListEl.append(editor);
-      continue;
-    }
-
-    const card = document.createElement("div");
-    card.className = "skillCard";
-
-    const header = document.createElement("div");
-    header.className = "skillHeader";
-
-    const name = document.createElement("div");
-    name.className = "skillName";
-    name.textContent = skill.name;
-
-    const domains = document.createElement("div");
-    domains.className = "skillDomains";
-    domains.textContent = skill.domainPatterns.join(", ");
-
-    header.append(name, domains);
-
-    const desc = document.createElement("div");
-    desc.className = "skillDescription";
-    desc.textContent = skill.shortDescription;
-
-    const actions = document.createElement("div");
-    actions.className = "skillActions";
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "miniButton";
-    editBtn.textContent = "Edit";
-    editBtn.addEventListener("click", () => {
-      editingSkill = { ...skill };
-      renderSkills();
-    });
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "miniButton";
-    deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", () => {
-      void deleteSkillWithPrompt(skill);
-    });
-    actions.append(editBtn, deleteBtn);
-
-    card.append(header, desc, actions);
-    skillsListEl.append(card);
-  }
-
-  updateSkillsEmptyState();
-};
-
-const filterSkills = () => {
-  const query = skillsSearchQuery.toLowerCase();
-  skillsFiltered = skillsCache.filter(
-    (skill) =>
-      skill.name.toLowerCase().includes(query) ||
-      skill.shortDescription.toLowerCase().includes(query) ||
-      skill.domainPatterns.some((pattern) => pattern.toLowerCase().includes(query)),
-  );
-  renderSkills();
-};
-
-const loadSkills = async () => {
-  skillsCache = (await listSkills()).sort((a, b) => a.name.localeCompare(b.name));
-  filterSkills();
-};
-
-const deleteSkillWithPrompt = async (skill: Skill) => {
-  if (!confirm(`Delete skill "${skill.name}"?`)) return;
-  await deleteSkill(skill.name);
-  editingSkill = null;
-  await loadSkills();
-};
-
-const saveEditingSkill = async () => {
-  if (!editingSkill) return;
-  const now = new Date().toISOString();
-  const toSave: Skill = {
-    ...editingSkill,
-    createdAt: editingSkill.createdAt || now,
-    lastUpdated: now,
-  };
-  await saveSkill(toSave);
-  editingSkill = null;
-  await loadSkills();
-};
-
-const coerceSkill = (raw: unknown): Skill | null => {
-  if (!raw || typeof raw !== "object") return null;
-  const obj = raw as Record<string, unknown>;
-  const name = typeof obj.name === "string" ? obj.name.trim() : "";
-  if (!name) return null;
-  const domainPatterns = Array.isArray(obj.domainPatterns)
-    ? obj.domainPatterns.map((pattern) => String(pattern).trim()).filter(Boolean)
-    : [];
-  const createdAt = typeof obj.createdAt === "string" ? obj.createdAt : new Date().toISOString();
-  const lastUpdated = typeof obj.lastUpdated === "string" ? obj.lastUpdated : createdAt;
-  return {
-    name,
-    domainPatterns,
-    shortDescription: typeof obj.shortDescription === "string" ? obj.shortDescription : "",
-    description: typeof obj.description === "string" ? obj.description : "",
-    examples: typeof obj.examples === "string" ? obj.examples : "",
-    library: typeof obj.library === "string" ? obj.library : "",
-    createdAt,
-    lastUpdated,
-  };
-};
-
-const exportSkills = async () => {
-  const all = await listSkills();
-  const json = JSON.stringify(all, null, 2);
-  const blob = new Blob([json], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `summarize-skills-${new Date().toISOString().split("T")[0]}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-};
-
-const importSkills = async () => {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "application/json,.json";
-  input.addEventListener("change", () => {
-    void (async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        if (!Array.isArray(parsed)) {
-          setStatus("Invalid skills file: expected an array.");
-          return;
-        }
-        const incoming = parsed.map(coerceSkill).filter((skill): skill is Skill => Boolean(skill));
-        importedSkills = incoming;
-
-        const conflicts: Array<{ skill: Skill; selected: boolean }> = [];
-        for (const skill of incoming) {
-          const existing = await getSkill(skill.name);
-          if (existing) conflicts.push({ skill, selected: true });
-        }
-
-        if (conflicts.length > 0) {
-          importConflicts = conflicts;
-          renderSkills();
-          return;
-        }
-
-        await performImport(incoming);
-      } catch (error) {
-        setStatus(
-          `Failed to import skills: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    })();
-  });
-  input.click();
-};
-
-const performImport = async (skills: Skill[]) => {
-  const skip = new Set(importConflicts.filter((c) => !c.selected).map((c) => c.skill.name));
-  const toImport = skills.filter((skill) => !skip.has(skill.name));
-  for (const skill of toImport) {
-    await saveSkill(skill);
-  }
-  importConflicts = [];
-  importedSkills = [];
-  await loadSkills();
-  setStatus(`Imported ${toImport.length} skill(s).`);
-  setTimeout(() => setStatus(""), 900);
-};
-
-skillsSearchEl.addEventListener("input", () => {
-  skillsSearchQuery = skillsSearchEl.value.trim();
-  filterSkills();
-});
-
-skillsExportBtn.addEventListener("click", () => {
-  void exportSkills();
-});
-
-skillsImportBtn.addEventListener("click", () => {
-  void importSkills();
-});
+skillsController.bind();
 
 const updateHoverSummariesToggle = () => {
   hoverSummariesToggle.update({
@@ -1253,8 +575,8 @@ async function load() {
   const s = await loadSettings();
   tokenEl.value = s.token;
   void checkDaemonStatus(s.token);
-  await refreshModelPresets(s.token);
-  setModelValue(s.model);
+  await modelPresets.refreshPresets(s.token);
+  modelPresets.setValue(s.model);
   {
     const resolved = resolvePresetOrCustom({ value: s.language, presets: languagePresets });
     languagePresetEl.value = resolved.presetValue;
@@ -1298,7 +620,7 @@ async function load() {
   currentMode = s.colorMode;
   pickers.update({ scheme: currentScheme, mode: currentMode, ...pickerHandlers });
   applyTheme({ scheme: s.colorScheme, mode: s.colorMode });
-  await loadSkills();
+  await skillsController.load();
   await updateAutomationPermissionsUi();
   if (resolveActiveTab() === "logs") {
     logsViewer.handleTokenChanged();
@@ -1313,7 +635,7 @@ let refreshTimer = 0;
 tokenEl.addEventListener("input", () => {
   window.clearTimeout(refreshTimer);
   refreshTimer = window.setTimeout(() => {
-    void refreshModelPresets(tokenEl.value);
+    void modelPresets.refreshPresets(tokenEl.value);
     void checkDaemonStatus(tokenEl.value);
     logsViewer.handleTokenChanged();
     processesViewer.handleTokenChanged();
@@ -1345,12 +667,8 @@ tokenCopyBtn.addEventListener("click", () => {
   void copyToken();
 });
 
-let modelRefreshAt = 0;
 const refreshModelsIfStale = () => {
-  const now = Date.now();
-  if (now - modelRefreshAt < 1500) return;
-  modelRefreshAt = now;
-  void refreshModelPresets(tokenEl.value);
+  modelPresets.refreshIfStale(tokenEl.value);
 };
 
 modelPresetEl.addEventListener("focus", refreshModelsIfStale);

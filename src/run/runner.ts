@@ -1,8 +1,6 @@
-import { CommanderError } from "commander";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import type { ExecFileFn } from "../markitdown.js";
-import type { FixedModelSpec } from "../model-spec.js";
+import { CommanderError } from "commander";
 import {
   type CacheState,
   clearCacheFiles,
@@ -16,6 +14,8 @@ import {
   parseMetricsMode,
   parseStreamMode,
 } from "../flags.js";
+import type { ExecFileFn } from "../markitdown.js";
+import type { FixedModelSpec } from "../model-spec.js";
 import { resolveSlideSettings } from "../slides/index.js";
 import {
   createThemeRenderer,
@@ -154,6 +154,16 @@ export async function runCli(
   if (program.opts().version) {
     stdout.write(`${formatVersionLine()}\n`);
     return;
+  }
+
+  // --width: override terminal width for markdown rendering (injected via COLUMNS env).
+  const widthArg =
+    typeof program.opts().width === "string" ? Number(program.opts().width) : undefined;
+  if (widthArg !== undefined) {
+    if (!Number.isFinite(widthArg) || widthArg < 20) {
+      throw new Error("--width must be a number >= 20.");
+    }
+    env.COLUMNS = String(Math.floor(widthArg));
   }
 
   const promptArg = typeof program.opts().prompt === "string" ? program.opts().prompt : null;
@@ -407,6 +417,7 @@ export async function runCli(
     openrouterApiKey,
     openrouterConfigured,
     groqApiKey,
+    assemblyaiApiKey,
     openaiTranscriptionKey,
     xaiApiKey,
     googleApiKey,
@@ -733,6 +744,7 @@ export async function runCli(
         zaiBaseUrl,
         nvidiaApiKey,
         nvidiaBaseUrl,
+        assemblyaiApiKey,
       },
     };
 
@@ -928,6 +940,7 @@ export async function runCli(
           ytDlpCookiesFromBrowser,
           falApiKey,
           groqApiKey,
+          assemblyaiApiKey,
           openaiTranscriptionKey,
         },
         summaryEngine,

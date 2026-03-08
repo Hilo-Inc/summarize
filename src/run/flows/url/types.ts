@@ -111,6 +111,7 @@ export type UrlFlowModel = {
     ytDlpCookiesFromBrowser: string | null;
     falApiKey: string | null;
     groqApiKey: string | null;
+    assemblyaiApiKey: string | null;
     openaiTranscriptionKey: string | null;
   };
   summaryEngine: ReturnType<typeof createSummaryEngine>;

@@ -7,15 +7,15 @@
 import { statSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { AssetAttachment } from "../../attachments.js";
-import type { AssetSummaryContext, SummarizeAssetArgs } from "./summary.js";
 import { createLinkPreviewClient, type ExtractedLinkContent } from "../../../content/index.js";
 import { createFirecrawlScraper } from "../../../firecrawl.js";
-import { readTweetWithBird } from "../../bird.js";
+import type { AssetAttachment } from "../../attachments.js";
+import { readTweetWithPreferredClient } from "../../bird.js";
 import { resolveTwitterCookies } from "../../cookies/twitter.js";
-import { hasBirdCli } from "../../env.js";
+import { hasBirdCli, hasXurlCli } from "../../env.js";
 import { writeVerbose } from "../../logging.js";
 import { MAX_LOCAL_MEDIA_BYTES, MAX_LOCAL_MEDIA_LABEL } from "./media-policy.js";
+import type { AssetSummaryContext, SummarizeAssetArgs } from "./summary.js";
 
 /**
  * Get file modification time for cache invalidation support.
@@ -55,8 +55,11 @@ export async function summarizeMediaFile(
 ): Promise<void> {
   // Check if basic transcription setup is available
   const groqKey = ctx.env.GROQ_API_KEY;
+  const geminiKey =
+    ctx.env.GEMINI_API_KEY ?? ctx.env.GOOGLE_GENERATIVE_AI_API_KEY ?? ctx.env.GOOGLE_API_KEY;
   const openaiKey = ctx.env.OPENAI_API_KEY;
   const falKey = ctx.env.FAL_KEY;
+  const assemblyaiKey = ctx.env.ASSEMBLYAI_API_KEY;
 
   // Helper to check if a binary is available on PATH
   const isBinaryAvailable = async (binary: string): Promise<boolean> => {
@@ -79,7 +82,8 @@ export async function summarizeMediaFile(
     ? true
     : await isBinaryAvailable("whisper-cli");
 
-  const hasAnyTranscriptionProvider = groqKey || openaiKey || falKey || hasLocalWhisper;
+  const hasAnyTranscriptionProvider =
+    groqKey || assemblyaiKey || geminiKey || openaiKey || falKey || hasLocalWhisper;
 
   if (!hasAnyTranscriptionProvider) {
     throw new Error(`Media file transcription requires one of the following:
@@ -87,14 +91,20 @@ export async function summarizeMediaFile(
 1. Groq Whisper (fast, free tier):
    Set GROQ_API_KEY=gsk_...
 
-2. OpenAI Whisper:
+2. Gemini audio transcription:
+   Set GEMINI_API_KEY=...
+
+3. AssemblyAI transcription:
+   Set ASSEMBLYAI_API_KEY=...
+
+4. OpenAI Whisper:
    Set OPENAI_API_KEY=sk-...
 
-3. FAL Whisper:
+5. FAL Whisper:
    Set FAL_KEY=...
 
-4. Local whisper.cpp (recommended, free):
-   brew install ggerganov/ggerganov/whisper-cpp
+6. Local whisper.cpp (recommended, free):
+   brew install whisper-cpp
    Ensure whisper-cli is on your PATH (or set SUMMARIZE_WHISPER_CPP_BINARY)
 
 See: https://github.com/openai/whisper for setup details`);
@@ -165,11 +175,12 @@ See: https://github.com/openai/whisper for setup details`);
         })
       : null;
 
-  // Create reader for bird tweets (for completeness, not used for media)
-  const readTweetWithBirdClient = hasBirdCli(ctx.env)
-    ? ({ url, timeoutMs }: { url: string; timeoutMs: number }) =>
-        readTweetWithBird({ url, timeoutMs, env: ctx.env })
-    : null;
+  // Create reader for X tweets (for completeness, not used for media)
+  const readTweetWithBirdClient =
+    hasXurlCli(ctx.env) || hasBirdCli(ctx.env)
+      ? ({ url, timeoutMs }: { url: string; timeoutMs: number }) =>
+          readTweetWithPreferredClient({ url, timeoutMs, env: ctx.env })
+      : null;
 
   // Create link preview client for transcript resolution
   const transcriptCache =
@@ -183,6 +194,7 @@ See: https://github.com/openai/whisper for setup details`);
       env: ctx.envForRun,
       falApiKey: falKey,
       groqApiKey: groqKey,
+      assemblyaiApiKey: assemblyaiKey ?? ctx.apiStatus.assemblyaiApiKey,
       openaiApiKey: openaiKey,
     },
     scrapeWithFirecrawl: firecrawlScraper,

@@ -3,6 +3,7 @@ import type {
   ProviderContext,
   ProviderFetchOptions,
 } from "../packages/core/src/content/transcript/types.js";
+import { stubMissingTranscriptionEnv } from "./helpers/transcription-env.js";
 
 const mocks = vi.hoisted(() => ({
   fetchTranscriptWithYtDlp: vi.fn(),
@@ -25,6 +26,7 @@ describe("placeholder transcript providers", () => {
   beforeEach(() => {
     mocks.fetchTranscriptWithYtDlp.mockReset();
     mocks.isWhisperCppReady.mockReset();
+    stubMissingTranscriptionEnv();
   });
 
   it("matches podcast URLs", async () => {

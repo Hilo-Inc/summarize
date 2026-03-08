@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createLinkPreviewClient } from "../src/content/index.js";
+import { stubMissingTranscriptionEnv } from "./helpers/transcription-env.js";
 
 const jsonResponse = (payload: unknown, status = 200) =>
   Response.json(payload, {
@@ -14,6 +15,10 @@ const htmlResponse = (html: string, status = 200) =>
   });
 
 describe("link preview extraction (YouTube mode)", () => {
+  beforeEach(() => {
+    stubMissingTranscriptionEnv();
+  });
+
   const html =
     "<!doctype html><html><head><title>Sample</title>" +
     '<script>ytcfg.set({"INNERTUBE_API_KEY":"TEST_KEY","INNERTUBE_CONTEXT":{"client":{"clientName":"WEB","clientVersion":"1.0"}},"INNERTUBE_CONTEXT_CLIENT_NAME":1});</script>' +

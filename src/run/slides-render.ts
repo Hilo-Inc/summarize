@@ -43,14 +43,16 @@ function resolveInlineProtocol({
 
   const termProgram = (env.TERM_PROGRAM ?? "").toLowerCase();
   const term = (env.TERM ?? "").toLowerCase();
+  const isWezTerm = termProgram.includes("wezterm") || Boolean(env.WEZTERM_EXECUTABLE);
   if (
     env.KITTY_WINDOW_ID ||
     term.includes("xterm-kitty") ||
+    isWezTerm ||
     termProgram.includes("ghostty") ||
     termProgram.includes("konsole") ||
     env.KONSOLE_VERSION
   ) {
-    return "kitty";
+    return isWezTerm ? "iterm" : "kitty";
   }
   if (termProgram.includes("iterm") || env.ITERM_SESSION_ID) {
     return "iterm";
@@ -74,7 +76,8 @@ function resolveSlideCellSize({
   termCols: number;
 }): { cols: number; rows: number } {
   const maxCols = clampInt(24, 64, Math.floor(termCols * 0.75));
-  const cols = clampInt(16, maxCols, 32);
+  const preferredCols = Math.floor(termCols * 0.6);
+  const cols = clampInt(16, maxCols, preferredCols);
   if (!width || !height) {
     return { cols, rows: 10 };
   }

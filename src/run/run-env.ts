@@ -7,6 +7,7 @@ export type EnvState = {
   openrouterApiKey: string | null;
   openrouterConfigured: boolean;
   groqApiKey: string | null;
+  assemblyaiApiKey: string | null;
   openaiTranscriptionKey: string | null;
   xaiApiKey: string | null;
   googleApiKey: string | null;
@@ -64,17 +65,20 @@ export function resolveEnvState({
     envValue: envForRun.XAI_BASE_URL,
     configValue: configForCli?.xai?.baseUrl,
   });
+  const zaiBaseUrl = resolveConfiguredBaseUrl({
+    envValue:
+      typeof envForRun.Z_AI_BASE_URL === "string"
+        ? envForRun.Z_AI_BASE_URL
+        : typeof envForRun.ZAI_BASE_URL === "string"
+          ? envForRun.ZAI_BASE_URL
+          : null,
+    configValue: configForCli?.zai?.baseUrl,
+  });
   const zaiKeyRaw =
     typeof envForRun.Z_AI_API_KEY === "string"
       ? envForRun.Z_AI_API_KEY
       : typeof envForRun.ZAI_API_KEY === "string"
         ? envForRun.ZAI_API_KEY
-        : null;
-  const zaiBaseUrlRaw =
-    typeof envForRun.Z_AI_BASE_URL === "string"
-      ? envForRun.Z_AI_BASE_URL
-      : typeof envForRun.ZAI_BASE_URL === "string"
-        ? envForRun.ZAI_BASE_URL
         : null;
   const openRouterKeyRaw =
     typeof envForRun.OPENROUTER_API_KEY === "string" ? envForRun.OPENROUTER_API_KEY : null;
@@ -109,6 +113,10 @@ export function resolveEnvState({
   })();
   const groqApiKey =
     typeof envForRun.GROQ_API_KEY === "string" ? envForRun.GROQ_API_KEY.trim() || null : null;
+  const assemblyaiApiKey =
+    typeof envForRun.ASSEMBLYAI_API_KEY === "string"
+      ? envForRun.ASSEMBLYAI_API_KEY.trim() || null
+      : null;
   const falApiKey = typeof envForRun.FAL_KEY === "string" ? envForRun.FAL_KEY : null;
   const firecrawlKey =
     typeof envForRun.FIRECRAWL_API_KEY === "string" ? envForRun.FIRECRAWL_API_KEY : null;
@@ -127,7 +135,7 @@ export function resolveEnvState({
   const firecrawlConfigured = firecrawlApiKey !== null;
   const xaiApiKey = xaiKeyRaw?.trim() ?? null;
   const zaiApiKey = zaiKeyRaw?.trim() ?? null;
-  const zaiBaseUrl = (zaiBaseUrlRaw?.trim() ?? "") || "https://api.z.ai/api/paas/v4";
+  const zaiBaseUrlEffective = (zaiBaseUrl?.trim() ?? "") || "https://api.z.ai/api/paas/v4";
   const nvidiaApiKey = nvidiaKeyRaw?.trim() ?? null;
   const nvidiaBaseUrlEffective =
     (nvidiaBaseUrl?.trim() ?? "") || "https://integrate.api.nvidia.com/v1";
@@ -162,12 +170,13 @@ export function resolveEnvState({
     openrouterApiKey,
     openrouterConfigured,
     groqApiKey,
+    assemblyaiApiKey,
     openaiTranscriptionKey,
     xaiApiKey,
     googleApiKey,
     anthropicApiKey,
     zaiApiKey,
-    zaiBaseUrl,
+    zaiBaseUrl: zaiBaseUrlEffective,
     nvidiaApiKey,
     nvidiaBaseUrl: nvidiaBaseUrlEffective,
     firecrawlApiKey,

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { CliProvider } from "../src/config.js";
-import type { ExecFileFn } from "../src/markitdown.js";
 import { isCliDisabled, resolveCliBinary, runCliModel } from "../src/llm/cli.js";
+import type { ExecFileFn } from "../src/markitdown.js";
 
 const makeStub = (handler: (args: string[]) => { stdout?: string; stderr?: string }) => {
   const execFileStub: ExecFileFn = ((_cmd, args, _options, cb) => {
@@ -214,6 +214,26 @@ describe("runCliModel", () => {
       });
       expect(result.text).toBe("ok");
     }
+  });
+
+  it("extracts result payloads from JSON array output", async () => {
+    const result = await runCliModel({
+      provider: "agent",
+      prompt: "Test",
+      model: "gpt-5.2",
+      allowTools: false,
+      timeoutMs: 1000,
+      env: {},
+      execFileImpl: makeStub(() => ({
+        stdout: JSON.stringify([
+          { type: "status", message: "working" },
+          { type: "result", result: "ok from array" },
+        ]),
+      })),
+      config: null,
+    });
+
+    expect(result.text).toBe("ok from array");
   });
 
   it("reads the Codex output file", async () => {

@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_OPENAI_UPLOAD_BYTES } from "../packages/core/src/transcription/whisper.js";
+import { stubMissingTranscriptionEnv } from "./helpers/transcription-env.js";
 
 type SpawnPlan = "ffmpeg-ok" | "ffmpeg-missing";
 
@@ -41,6 +42,10 @@ const baseOptions = {
 };
 
 describe("podcast transcript provider - more branches 3", () => {
+  beforeEach(() => {
+    stubMissingTranscriptionEnv();
+  });
+
   it("returns a helpful message when transcription keys are missing", async () => {
     const { fetchTranscript } =
       await import("../packages/core/src/content/transcript/providers/podcast.js");

@@ -1,10 +1,15 @@
+import {
+  isBunCompressedResponseError,
+  withBunCompressionHeaders,
+  withBunIdentityEncoding,
+} from "../../bun.js";
+import { isYouTubeUrl } from "../../url.js";
 import type {
   FirecrawlScrapeResult,
   LinkPreviewProgressEvent,
   ScrapeWithFirecrawl,
 } from "../deps.js";
 import type { CacheMode, FirecrawlDiagnostics } from "../types.js";
-import { isYouTubeUrl } from "../../url.js";
 import { appendNote } from "./utils.js";
 
 const REQUEST_HEADERS: Record<string, string> = {
@@ -29,9 +34,10 @@ export interface HtmlDocumentFetchResult {
   finalUrl: string;
 }
 
-export async function fetchHtmlDocument(
+async function fetchHtmlOnce(
   fetchImpl: typeof fetch,
   url: string,
+  headers: Record<string, string>,
   {
     timeoutMs,
     onProgress,
@@ -50,7 +56,7 @@ export async function fetchHtmlDocument(
 
   try {
     const response = await fetchImpl(url, {
-      headers: REQUEST_HEADERS,
+      headers,
       redirect: "follow",
       signal: controller.signal,
     });
@@ -116,6 +122,29 @@ export async function fetchHtmlDocument(
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function fetchHtmlDocument(
+  fetchImpl: typeof fetch,
+  url: string,
+  options: {
+    timeoutMs?: number;
+    onProgress?: ((event: LinkPreviewProgressEvent) => void) | null;
+  } = {},
+): Promise<HtmlDocumentFetchResult> {
+  try {
+    return await fetchHtmlOnce(fetchImpl, url, withBunCompressionHeaders(REQUEST_HEADERS), options);
+  } catch (error) {
+    // Bun's fetch has known bugs where its streaming zlib decompression throws
+    // ZlibError / ShortRead on certain chunked+compressed responses. Retry the
+    // request asking the server to skip compression entirely.
+    // https://github.com/oven-sh/bun/issues/23149
+    if (isBunCompressedResponseError(error)) {
+      const uncompressedHeaders = withBunIdentityEncoding(REQUEST_HEADERS);
+      return await fetchHtmlOnce(fetchImpl, url, uncompressedHeaders, options);
+    }
+    throw error;
   }
 }
 

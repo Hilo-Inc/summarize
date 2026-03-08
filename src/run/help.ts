@@ -142,6 +142,11 @@ export function buildProgram() {
       "Stream LLM output: auto (TTY only), on, off. Note: streaming is disabled in --json mode.",
       "auto",
     )
+    .option(
+      "--width <columns>",
+      "Override terminal width for markdown rendering (default: auto-detect, max 120)",
+      undefined,
+    )
     .option("--plain", "Keep raw text/markdown output (no ANSI/OSC rendering)", false)
     .option("--no-color", "Disable ANSI colors in output", false)
     .addOption(
@@ -305,7 +310,7 @@ export function buildConciseHelp(): string {
     "",
     "Examples:",
     '  summarize "https://example.com"',
-    '  summarize "/path/to/file.pdf" --model google/gemini-3-flash-preview',
+    '  summarize "/path/to/file.pdf" --model google/gemini-3-flash',
     "  pbpaste | summarize -",
     "",
     "Run summarize --help for full options.",
@@ -350,7 +355,7 @@ export function buildTranscriberHelp(): string {
     "Usage: summarize transcriber setup [--model parakeet|canary] [--theme <name>]",
     "",
     "Configures local ONNX transcription by printing the required env vars.",
-    "Auto selection prefers ONNX when configured, then whisper.cpp, then OpenAI/FAL.",
+    "Auto selection prefers Groq first, then ONNX/whisper.cpp, then AssemblyAI/Gemini/OpenAI/FAL.",
     "",
     "Options:",
     "  --model <name>   parakeet (default) or canary",

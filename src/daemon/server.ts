@@ -4,8 +4,6 @@ import http from "node:http";
 import path from "node:path";
 import { Writable } from "node:stream";
 import type { CacheState } from "../cache.js";
-import type { SlideExtractionResult, SlideSettings } from "../slides/index.js";
-import type { DaemonConfig } from "./config.js";
 import { loadSummarizeConfig } from "../config.js";
 import { createDaemonLogger } from "../logging/daemon.js";
 import { runWithProcessContext, setProcessObserver } from "../processes.js";
@@ -16,170 +14,46 @@ import { formatModelLabelForDisplay } from "../run/finish-line.js";
 import { createMediaCacheFromConfig } from "../run/media-cache-state.js";
 import { resolveRunOverrides } from "../run/run-settings.js";
 import { encodeSseEvent, type SseEvent, type SseSlidesData } from "../shared/sse-events.js";
+import type { SlideExtractionResult, SlideSettings } from "../slides/index.js";
 import { resolveSlideImagePath, resolveSlideSettings } from "../slides/index.js";
 import { resolvePackageVersion } from "../version.js";
-import { completeAgentResponse, streamAgentResponse } from "./agent.js";
 import { type DaemonRequestedMode, resolveAutoDaemonMode } from "./auto-mode.js";
+import { daemonConfigTokens, type DaemonConfig } from "./config.js";
 import { DAEMON_HOST, DAEMON_PORT_DEFAULT } from "./constants.js";
 import { resolveDaemonLogPaths } from "./launchd.js";
-import { buildModelPickerOptions } from "./models.js";
+import { ProcessRegistry } from "./process-registry.js";
+import { handleAdminRoutes } from "./server-admin-routes.js";
+import { handleAgentRoute } from "./server-agent-route.js";
 import {
-  buildProcessListResult,
-  buildProcessLogsResult,
-  ProcessRegistry,
-} from "./process-registry.js";
+  clampNumber,
+  corsHeaders,
+  json,
+  readBearerToken,
+  readCorsHeaders,
+  readJsonBody,
+  text,
+} from "./server-http.js";
+import {
+  createSession,
+  emitMeta,
+  emitSlides,
+  emitSlidesDone,
+  emitSlidesStatus,
+  endSession,
+  pushSlidesToSession,
+  pushToSession,
+  scheduleSessionCleanup,
+  type Session,
+  type SessionEvent,
+} from "./server-session.js";
+import { attachBufferedSseSession } from "./server-sse.js";
 import {
   extractContentForUrl,
   streamSummaryForUrl,
   streamSummaryForVisiblePage,
 } from "./summarize.js";
 
-type SessionEvent = SseEvent;
-
-type Session = {
-  id: string;
-  createdAtMs: number;
-  buffer: Array<{ event: SessionEvent; bytes: number }>;
-  bufferBytes: number;
-  done: boolean;
-  clients: Set<http.ServerResponse>;
-  slidesBuffer: Array<{ event: SessionEvent; bytes: number }>;
-  slidesBufferBytes: number;
-  slidesClients: Set<http.ServerResponse>;
-  slidesDone: boolean;
-  slidesRequested: boolean;
-  slidesLastStatus: string | null;
-  lastMeta: {
-    model: string | null;
-    modelLabel: string | null;
-    inputSummary: string | null;
-    summaryFromCache: boolean | null;
-  };
-  slides: SlideExtractionResult | null;
-};
-
-function json(
-  res: http.ServerResponse,
-  status: number,
-  payload: unknown,
-  headers?: Record<string, string>,
-) {
-  const body = `${JSON.stringify(payload)}\n`;
-  res.writeHead(status, {
-    "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(body).toString(),
-    ...headers,
-  });
-  res.end(body);
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.max(min, Math.min(max, value));
-}
-
-async function readLogTail({
-  filePath,
-  maxBytes,
-  maxLines,
-}: {
-  filePath: string;
-  maxBytes: number;
-  maxLines: number;
-}): Promise<{ lines: string[]; truncated: boolean; bytesRead: number }> {
-  const stat = await fs.stat(filePath);
-  const size = stat.size;
-  const readBytes = Math.max(0, Math.min(size, maxBytes));
-  const handle = await fs.open(filePath, "r");
-  try {
-    const buffer = Buffer.alloc(readBytes);
-    const start = Math.max(0, size - readBytes);
-    await handle.read(buffer, 0, readBytes, start);
-    let text = buffer.toString("utf8");
-    let truncated = size > readBytes;
-    if (truncated) {
-      const firstNewline = text.indexOf("\n");
-      if (firstNewline !== -1) {
-        text = text.slice(firstNewline + 1);
-      }
-    }
-    let lines = text.split(/\r?\n/).filter((line) => line.length > 0);
-    if (lines.length > maxLines) {
-      lines = lines.slice(lines.length - maxLines);
-      truncated = true;
-    }
-    return { lines, truncated, bytesRead: readBytes };
-  } finally {
-    await handle.close();
-  }
-}
-
-function text(
-  res: http.ServerResponse,
-  status: number,
-  body: string,
-  headers?: Record<string, string>,
-) {
-  const out = body.endsWith("\n") ? body : `${body}\n`;
-  res.writeHead(status, {
-    "content-type": "text/plain; charset=utf-8",
-    "content-length": Buffer.byteLength(out).toString(),
-    ...headers,
-  });
-  res.end(out);
-}
-
-function resolveOriginHeader(req: http.IncomingMessage): string | null {
-  const origin = req.headers.origin;
-  if (typeof origin !== "string") return null;
-  if (!origin.trim()) return null;
-  return origin;
-}
-
-function corsHeaders(origin: string | null): Record<string, string> {
-  if (!origin) return {};
-  return {
-    "access-control-allow-origin": origin,
-    "access-control-allow-credentials": "true",
-    "access-control-allow-headers": "authorization, content-type",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    // Chrome Private Network Access (PNA): allow requests to localhost from secure contexts.
-    // Without this, extensions often fail with a generic "Failed to fetch".
-    "access-control-allow-private-network": "true",
-    "access-control-max-age": "600",
-    vary: "Origin",
-  };
-}
-
-function readBearerToken(req: http.IncomingMessage): string | null {
-  const header = req.headers.authorization;
-  if (typeof header !== "string") return null;
-  const m = header.match(/^Bearer\s+(.+)\s*$/i);
-  return m?.[1]?.trim() || null;
-}
-
-async function readJsonBody(req: http.IncomingMessage, maxBytes: number): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.byteLength;
-    if (total > maxBytes) throw new Error(`Body too large (>${maxBytes} bytes)`);
-    chunks.push(buf);
-  }
-  const text = Buffer.concat(chunks).toString("utf8");
-  return JSON.parse(text);
-}
-
-function wantsJsonResponse(req: http.IncomingMessage, url: URL): boolean {
-  const format = url.searchParams.get("format");
-  if (format && format.toLowerCase() === "json") return true;
-  const accept = req.headers.accept;
-  if (typeof accept !== "string") return false;
-  const lower = accept.toLowerCase();
-  if (lower.includes("text/event-stream")) return false;
-  return lower.includes("application/json");
-}
+export { corsHeaders, isTrustedOrigin } from "./server-http.js";
 
 function parseDiagnostics(raw: unknown): { includeContent: boolean } {
   if (!raw || typeof raw !== "object") {
@@ -210,140 +84,6 @@ function createLineWriter(onLine: (line: string) => void) {
       callback();
     },
   });
-}
-
-function createSession(): Session {
-  return {
-    id: randomUUID(),
-    createdAtMs: Date.now(),
-    buffer: [],
-    bufferBytes: 0,
-    done: false,
-    clients: new Set(),
-    slidesBuffer: [],
-    slidesBufferBytes: 0,
-    slidesClients: new Set(),
-    slidesDone: false,
-    slidesRequested: false,
-    slidesLastStatus: null,
-    lastMeta: { model: null, modelLabel: null, inputSummary: null, summaryFromCache: null },
-    slides: null,
-  };
-}
-
-const MAX_SESSION_BUFFER_EVENTS = 2000;
-const MAX_SESSION_BUFFER_BYTES = 512 * 1024;
-const MAX_SLIDES_BUFFER_EVENTS = 600;
-const MAX_SLIDES_BUFFER_BYTES = 256 * 1024;
-const MAX_SESSION_LIFETIME_MS = 30 * 60_000;
-
-function pushToSession(
-  session: Session,
-  evt: SessionEvent,
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  const encoded = encodeSseEvent(evt);
-  for (const res of session.clients) {
-    res.write(encoded);
-  }
-  onSessionEvent?.(evt, session.id);
-  const bytes = Buffer.byteLength(encoded);
-  session.buffer.push({ event: evt, bytes });
-  session.bufferBytes += bytes;
-  while (
-    session.buffer.length > MAX_SESSION_BUFFER_EVENTS ||
-    session.bufferBytes > MAX_SESSION_BUFFER_BYTES
-  ) {
-    const removed = session.buffer.shift();
-    if (!removed) break;
-    session.bufferBytes -= removed.bytes;
-  }
-  if (evt.event === "done" || evt.event === "error") {
-    session.done = true;
-  }
-}
-
-function pushSlidesToSession(
-  session: Session,
-  evt: SessionEvent,
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  const encoded = encodeSseEvent(evt);
-  for (const res of session.slidesClients) {
-    res.write(encoded);
-  }
-  onSessionEvent?.(evt, session.id);
-  const bytes = Buffer.byteLength(encoded);
-  session.slidesBuffer.push({ event: evt, bytes });
-  session.slidesBufferBytes += bytes;
-  while (
-    session.slidesBuffer.length > MAX_SLIDES_BUFFER_EVENTS ||
-    session.slidesBufferBytes > MAX_SLIDES_BUFFER_BYTES
-  ) {
-    const removed = session.slidesBuffer.shift();
-    if (!removed) break;
-    session.slidesBufferBytes -= removed.bytes;
-  }
-  if (evt.event === "done" || evt.event === "error") {
-    session.slidesDone = true;
-  }
-  if (evt.event === "status") {
-    session.slidesLastStatus = evt.data.text;
-  }
-}
-
-function emitMeta(
-  session: Session,
-  patch: Partial<{
-    model: string | null;
-    modelLabel: string | null;
-    inputSummary: string | null;
-    summaryFromCache: boolean | null;
-  }>,
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  const next = { ...session.lastMeta, ...patch };
-  if (
-    next.model === session.lastMeta.model &&
-    next.modelLabel === session.lastMeta.modelLabel &&
-    next.inputSummary === session.lastMeta.inputSummary &&
-    next.summaryFromCache === session.lastMeta.summaryFromCache
-  ) {
-    return;
-  }
-  session.lastMeta = next;
-  pushToSession(session, { event: "meta", data: next }, onSessionEvent);
-}
-
-function emitSlides(
-  session: Session,
-  data: SseSlidesData,
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  pushToSession(session, { event: "slides", data }, onSessionEvent);
-  pushSlidesToSession(session, { event: "slides", data }, onSessionEvent);
-}
-
-function emitSlidesStatus(
-  session: Session,
-  text: string,
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  const trimmed = text.trim();
-  if (!trimmed) return;
-  pushSlidesToSession(session, { event: "status", data: { text: trimmed } }, onSessionEvent);
-}
-
-function emitSlidesDone(
-  session: Session,
-  result: { ok: boolean; error?: string | null },
-  onSessionEvent?: ((event: SessionEvent, sessionId: string) => void) | null,
-) {
-  if (!result.ok) {
-    const message = result.error?.trim() || "Slides failed.";
-    pushSlidesToSession(session, { event: "error", data: { message } }, onSessionEvent);
-  }
-  pushSlidesToSession(session, { event: "done", data: {} }, onSessionEvent);
 }
 
 function resolveHomeDir(env: Record<string, string | undefined>): string {
@@ -413,38 +153,6 @@ function resolveToolPath(
   return resolveExecutableInPath(binary, env);
 }
 
-function endSession(session: Session) {
-  for (const res of session.clients) {
-    res.end();
-  }
-  session.clients.clear();
-  for (const res of session.slidesClients) {
-    res.end();
-  }
-  session.slidesClients.clear();
-}
-
-function scheduleSessionCleanup({
-  session,
-  sessions,
-  delayMs = 60_000,
-}: {
-  session: Session;
-  sessions: Map<string, Session>;
-  delayMs?: number;
-}) {
-  setTimeout(() => {
-    const ageMs = Date.now() - session.createdAtMs;
-    const slidesPending = session.slidesRequested && !session.slidesDone;
-    if (!slidesPending || ageMs > MAX_SESSION_LIFETIME_MS) {
-      sessions.delete(session.id);
-      endSession(session);
-      return;
-    }
-    scheduleSessionCleanup({ session, sessions, delayMs });
-  }, delayMs).unref();
-}
-
 export function buildHealthPayload(importMetaUrl?: string) {
   return { ok: true, pid: process.pid, version: resolvePackageVersion(importMetaUrl) };
 }
@@ -492,8 +200,7 @@ export async function runDaemonServer({
 
   const server = http.createServer((req, res) => {
     void (async () => {
-      const origin = resolveOriginHeader(req);
-      const cors = corsHeaders(origin);
+      const cors = readCorsHeaders(req);
 
       if (req.method === "OPTIONS") {
         res.writeHead(204, cors);
@@ -510,138 +217,29 @@ export async function runDaemonServer({
       }
 
       const token = readBearerToken(req);
-      const authed = token && token === config.token;
+      const authed = token ? daemonConfigTokens(config).includes(token) : false;
       if (pathname.startsWith("/v1/") && !authed) {
         json(res, 401, { ok: false, error: "unauthorized" }, cors);
         return;
       }
 
-      if (req.method === "GET" && pathname === "/v1/ping") {
-        json(res, 200, { ok: true }, cors);
-        return;
-      }
-
-      if (req.method === "GET" && pathname === "/v1/logs") {
-        const source = url.searchParams.get("source")?.trim() || "daemon";
-        const tailParam = url.searchParams.get("tail")?.trim() || "";
-        const tail = clampNumber(Number(tailParam || "800"), 50, 5000);
-        const maxBytes = clampNumber(
-          Number(url.searchParams.get("maxBytes") ?? "262144"),
-          16_384,
-          2_000_000,
-        );
-
-        const sources: Record<
-          string,
-          { filePath: string; format: "json" | "pretty" | "text"; enabled?: boolean }
-        > = {
-          daemon: {
-            filePath: daemonLogFile,
-            format: daemonLogger.config?.format ?? "json",
-            enabled: daemonLogger.enabled,
-          },
-          stdout: { filePath: daemonLogPaths.stdoutPath, format: "text" },
-          stderr: { filePath: daemonLogPaths.stderrPath, format: "text" },
-        };
-
-        const selected = sources[source];
-        if (!selected) {
-          json(res, 400, { ok: false, error: `Unknown log source "${source}".` }, cors);
-          return;
-        }
-
-        const stat = await fs.stat(selected.filePath).catch(() => null);
-        if (!stat?.isFile()) {
-          const disabledNote =
-            source === "daemon" && selected.enabled === false
-              ? "Daemon logging is disabled (no log file)."
-              : "Log file not found.";
-          json(res, 404, { ok: false, error: disabledNote }, cors);
-          return;
-        }
-
-        const { lines, truncated, bytesRead } = await readLogTail({
-          filePath: selected.filePath,
-          maxBytes,
-          maxLines: tail,
-        });
-        const warning =
-          source === "daemon" && selected.enabled === false
-            ? "Daemon logging disabled; showing existing file only."
-            : null;
-        json(
+      if (
+        await handleAdminRoutes({
+          req,
           res,
-          200,
-          {
-            ok: true,
-            source,
-            format: selected.format,
-            lines,
-            truncated,
-            bytesRead,
-            sizeBytes: stat.size,
-            mtimeMs: stat.mtimeMs,
-            ...(warning ? { warning } : {}),
-          },
+          url,
+          pathname,
           cors,
-        );
-        return;
-      }
-
-      const processLogsMatch = pathname.match(/^\/v1\/processes\/([^/]+)\/logs$/);
-      if (req.method === "GET" && processLogsMatch) {
-        const id = processLogsMatch[1];
-        const tail = clampNumber(Number(url.searchParams.get("tail") ?? "200"), 20, 1000);
-        const streamRaw = (url.searchParams.get("stream") ?? "merged").toLowerCase();
-        const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" ? streamRaw : ("merged" as const);
-        const result = buildProcessLogsResult(processRegistry, id, { tail, stream });
-        if (!result) {
-          json(res, 404, { ok: false, error: "not found" }, cors);
-          return;
-        }
-        json(res, 200, result, cors);
-        return;
-      }
-
-      if (req.method === "GET" && pathname === "/v1/processes") {
-        const includeCompleted =
-          (url.searchParams.get("includeCompleted") ?? "").toLowerCase() === "true" ||
-          url.searchParams.get("includeCompleted") === "1";
-        const limit = clampNumber(Number(url.searchParams.get("limit") ?? "80"), 10, 200);
-        const result = buildProcessListResult(processRegistry, { includeCompleted, limit });
-        json(res, 200, result, cors);
-        return;
-      }
-
-      if (req.method === "GET" && pathname === "/v1/models") {
-        const result = await buildModelPickerOptions({
           env,
-          envForRun: env,
-          configForCli: summarizeConfig,
           fetchImpl,
-        });
-        json(res, 200, result, cors);
-        return;
-      }
-
-      if (req.method === "GET" && pathname === "/v1/tools") {
-        const ytDlpPath = resolveToolPath("yt-dlp", env, "YT_DLP_PATH");
-        const ffmpegPath = resolveToolPath("ffmpeg", env, "FFMPEG_PATH");
-        const tesseractPath = resolveToolPath("tesseract", env, "TESSERACT_PATH");
-        json(
-          res,
-          200,
-          {
-            ok: true,
-            tools: {
-              ytDlp: { available: Boolean(ytDlpPath), path: ytDlpPath },
-              ffmpeg: { available: Boolean(ffmpegPath), path: ffmpegPath },
-              tesseract: { available: Boolean(tesseractPath), path: tesseractPath },
-            },
-          },
-          cors,
-        );
+          summarizeConfig,
+          daemonLogger,
+          daemonLogFile,
+          daemonLogPaths,
+          processRegistry,
+          resolveToolPath,
+        })
+      ) {
         return;
       }
 
@@ -651,7 +249,7 @@ export async function runDaemonServer({
           return;
         }
 
-        const session = createSession();
+        const session = createSession(() => randomUUID());
         refreshSessions.set(session.id, session);
         activeRefreshSessionId = session.id;
         json(res, 200, { ok: true, id: session.id }, cors);
@@ -824,7 +422,7 @@ export async function runDaemonServer({
           return;
         }
 
-        const session = createSession();
+        const session = createSession(() => randomUUID());
         session.slidesRequested = Boolean(slidesSettings);
         sessions.set(session.id, session);
         const requestLogger = daemonLogger.getSubLogger("daemon.summarize", {
@@ -1229,113 +827,13 @@ export async function runDaemonServer({
                 : {}),
             });
           } finally {
-            scheduleSessionCleanup({ session, sessions });
+            scheduleSessionCleanup({ session, sessions, refreshSessions });
           }
         });
         return;
       }
 
-      if (req.method === "POST" && pathname === "/v1/agent") {
-        let body: unknown;
-        try {
-          body = await readJsonBody(req, 4_000_000);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          json(res, 400, { ok: false, error: message }, cors);
-          return;
-        }
-        if (!body || typeof body !== "object") {
-          json(res, 400, { ok: false, error: "invalid json" }, cors);
-          return;
-        }
-
-        const obj = body as Record<string, unknown>;
-        const pageUrl = typeof obj.url === "string" ? obj.url.trim() : "";
-        const pageTitle = typeof obj.title === "string" ? obj.title.trim() : null;
-        const pageContent = typeof obj.pageContent === "string" ? obj.pageContent : "";
-        const messages = obj.messages;
-        const modelOverride = typeof obj.model === "string" ? obj.model.trim() : null;
-        const tools = Array.isArray(obj.tools)
-          ? obj.tools.filter((tool): tool is string => typeof tool === "string")
-          : [];
-        const automationEnabled = Boolean(obj.automationEnabled);
-
-        if (!pageUrl) {
-          json(res, 400, { ok: false, error: "missing url" }, cors);
-          return;
-        }
-
-        const runId = `agent-${randomUUID()}`;
-        const wantsJson = wantsJsonResponse(req, url);
-        if (wantsJson) {
-          try {
-            const assistant = await runWithProcessContext({ runId, source: "agent" }, async () =>
-              completeAgentResponse({
-                env,
-                pageUrl,
-                pageTitle,
-                pageContent,
-                messages,
-                modelOverride:
-                  modelOverride && modelOverride.toLowerCase() !== "auto" ? modelOverride : null,
-                tools,
-                automationEnabled,
-              }),
-            );
-            json(res, 200, { ok: true, assistant }, cors);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.error("[summarize-daemon] agent failed", error);
-            json(res, 500, { ok: false, error: message }, cors);
-          }
-          return;
-        }
-
-        res.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache",
-          connection: "keep-alive",
-          "x-accel-buffering": "no",
-          ...cors,
-        });
-
-        const controller = new AbortController();
-        const abort = () => controller.abort();
-        req.on("close", abort);
-        res.on("close", abort);
-
-        const writeEvent = (event: SseEvent) => {
-          if (res.writableEnded) return;
-          res.write(encodeSseEvent(event));
-        };
-
-        try {
-          await runWithProcessContext({ runId, source: "agent" }, async () =>
-            streamAgentResponse({
-              env,
-              pageUrl,
-              pageTitle,
-              pageContent,
-              messages,
-              modelOverride:
-                modelOverride && modelOverride.toLowerCase() !== "auto" ? modelOverride : null,
-              tools,
-              automationEnabled,
-              onChunk: (text) => writeEvent({ event: "chunk", data: { text } }),
-              onAssistant: (assistant) => writeEvent({ event: "assistant", data: assistant }),
-              signal: controller.signal,
-            }),
-          );
-          writeEvent({ event: "done", data: {} });
-          res.end();
-        } catch (error) {
-          if (controller.signal.aborted) return;
-          const message = error instanceof Error ? error.message : String(error);
-          console.error("[summarize-daemon] agent failed", error);
-          writeEvent({ event: "error", data: { message } });
-          writeEvent({ event: "done", data: {} });
-          res.end();
-        }
+      if (await handleAgentRoute({ req, res, url, cors, env, createRunId: randomUUID })) {
         return;
       }
 
@@ -1481,31 +979,12 @@ export async function runDaemonServer({
           return;
         }
 
-        res.writeHead(200, {
-          ...cors,
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-        });
-        session.clients.add(res);
-
-        for (const entry of session.buffer) {
-          res.write(encodeSseEvent(entry.event));
-        }
-        if (session.done) {
-          res.end();
-          session.clients.delete(res);
-          return;
-        }
-
-        const keepalive = setInterval(() => {
-          res.write(`: keepalive ${Date.now()}\n\n`);
-        }, 15_000);
-        keepalive.unref();
-
-        res.on("close", () => {
-          clearInterval(keepalive);
-          session.clients.delete(res);
+        attachBufferedSseSession({
+          res,
+          cors,
+          buffer: session.buffer,
+          clients: session.clients,
+          done: session.done,
         });
         return;
       }
@@ -1523,47 +1002,34 @@ export async function runDaemonServer({
           return;
         }
 
-        res.writeHead(200, {
-          ...cors,
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-        });
-        session.slidesClients.add(res);
+        attachBufferedSseSession({
+          res,
+          cors,
+          buffer: session.slidesBuffer,
+          clients: session.slidesClients,
+          done: session.slidesDone,
+          afterReplay: () => {
+            const hasSlidesEvent = session.slidesBuffer.some(
+              (entry) => entry.event.event === "slides",
+            );
+            if (!hasSlidesEvent && session.slides) {
+              res.write(
+                encodeSseEvent({
+                  event: "slides",
+                  data: buildSlidesPayload({ slides: session.slides, port }),
+                }),
+              );
+            }
 
-        for (const entry of session.slidesBuffer) {
-          res.write(encodeSseEvent(entry.event));
-        }
-
-        const hasSlidesEvent = session.slidesBuffer.some((entry) => entry.event.event === "slides");
-        if (!hasSlidesEvent && session.slides) {
-          res.write(
-            encodeSseEvent({
-              event: "slides",
-              data: buildSlidesPayload({ slides: session.slides, port }),
-            }),
-          );
-        }
-
-        const hasStatusEvent = session.slidesBuffer.some((entry) => entry.event.event === "status");
-        if (!hasStatusEvent && session.slidesLastStatus) {
-          res.write(encodeSseEvent({ event: "status", data: { text: session.slidesLastStatus } }));
-        }
-
-        if (session.slidesDone) {
-          res.end();
-          session.slidesClients.delete(res);
-          return;
-        }
-
-        const keepalive = setInterval(() => {
-          res.write(`: keepalive ${Date.now()}\n\n`);
-        }, 15_000);
-        keepalive.unref();
-
-        res.on("close", () => {
-          clearInterval(keepalive);
-          session.slidesClients.delete(res);
+            const hasStatusEvent = session.slidesBuffer.some(
+              (entry) => entry.event.event === "status",
+            );
+            if (!hasStatusEvent && session.slidesLastStatus) {
+              res.write(
+                encodeSseEvent({ event: "status", data: { text: session.slidesLastStatus } }),
+              );
+            }
+          },
         });
         return;
       }
@@ -1581,39 +1047,19 @@ export async function runDaemonServer({
           return;
         }
 
-        res.writeHead(200, {
-          ...cors,
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-        });
-        session.clients.add(res);
-
-        for (const entry of session.buffer) {
-          res.write(encodeSseEvent(entry.event));
-        }
-        if (session.done) {
-          res.end();
-          session.clients.delete(res);
-          return;
-        }
-
-        const keepalive = setInterval(() => {
-          res.write(`: keepalive ${Date.now()}\n\n`);
-        }, 15_000);
-        keepalive.unref();
-
-        res.on("close", () => {
-          clearInterval(keepalive);
-          session.clients.delete(res);
+        attachBufferedSseSession({
+          res,
+          cors,
+          buffer: session.buffer,
+          clients: session.clients,
+          done: session.done,
         });
         return;
       }
 
       text(res, 404, "Not found", cors);
     })().catch((error) => {
-      const origin = resolveOriginHeader(req);
-      const cors = corsHeaders(origin);
+      const cors = readCorsHeaders(req);
       const message = error instanceof Error ? error.message : String(error);
       if (!res.headersSent) {
         json(res, 500, { ok: false, error: message }, cors);

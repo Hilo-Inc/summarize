@@ -1,8 +1,10 @@
 import type { Api, AssistantMessage, Message, Model, Tool } from "@mariozechner/pi-ai";
 import { completeSimple, getModel, streamSimple } from "@mariozechner/pi-ai";
 import { buildPromptHash } from "../cache.js";
+import { runCliModel } from "../llm/cli.js";
 import { createSyntheticModel } from "../llm/providers/shared.js";
 import { buildAutoModelAttempts, envHasKey } from "../model-auto.js";
+import { parseCliUserModelId } from "../run/env.js";
 import { resolveRunContextState } from "../run/run-context.js";
 import { resolveModelSelection } from "../run/run-models.js";
 import { resolveRunOverrides } from "../run/run-settings.js";
@@ -203,8 +205,9 @@ const TOOL_DEFINITIONS: Record<string, Tool> = {
           description: "Artifact filename (required for get/create/update/delete)",
         },
         content: {
-          description: "Content to store (string or JSON-serializable object)",
-          type: ["string", "object", "array", "number", "boolean", "null"],
+          type: "string",
+          description:
+            "Text content to store. For JSON/arrays/numbers/booleans/null, pass serialized JSON as a string.",
         },
         mimeType: { type: "string", description: "Optional MIME type override" },
         contentBase64: { type: "string", description: "Base64 payload for binary files" },
@@ -317,6 +320,24 @@ ${pageTitle ? `Page Title: ${pageTitle}` : ""}
 ${pageContent}
 </page_content>
 `;
+}
+
+function flattenAgentForCli({
+  systemPrompt,
+  messages,
+}: {
+  systemPrompt: string;
+  messages: Message[];
+}): string {
+  const parts: string[] = [systemPrompt];
+  for (const msg of messages) {
+    const role = msg.role === "user" ? "User" : "Assistant";
+    const content = typeof msg.content === "string" ? msg.content : "";
+    if (content) {
+      parts.push(`${role}: ${content}`);
+    }
+  }
+  return parts.join("\n\n");
 }
 
 function normalizeMessages(raw: unknown): Message[] {
@@ -444,6 +465,60 @@ function resolveApiKeyForModel({
   throw new Error(`Missing API key for provider: ${provider}`);
 }
 
+function buildNoAgentModelAvailableError({
+  attempts,
+  envForAuto,
+  cliAvailability,
+}: {
+  attempts: Array<{
+    transport: "native" | "openrouter" | "cli";
+    userModelId: string;
+    requiredEnv: string;
+  }>;
+  envForAuto: Record<string, string | undefined>;
+  cliAvailability: {
+    claude?: boolean;
+    codex?: boolean;
+    gemini?: boolean;
+    agent?: boolean;
+  };
+}): Error {
+  const checked = attempts.map((attempt) => attempt.userModelId);
+  const missingEnv = Array.from(
+    new Set(
+      attempts
+        .filter((attempt) => attempt.transport !== "cli")
+        .map((attempt) => attempt.requiredEnv)
+        .filter((requiredEnv) => !envHasKey(envForAuto, requiredEnv as never)),
+    ),
+  );
+  const unavailableCli = Array.from(
+    new Set(
+      attempts
+        .filter((attempt) => attempt.transport === "cli")
+        .map((attempt) => {
+          if (attempt.requiredEnv === "CLI_CLAUDE") return "claude";
+          if (attempt.requiredEnv === "CLI_CODEX") return "codex";
+          if (attempt.requiredEnv === "CLI_GEMINI") return "gemini";
+          return "agent";
+        })
+        .filter((provider) => !cliAvailability[provider as keyof typeof cliAvailability]),
+    ),
+  );
+
+  const details = [
+    "No model available for agent.",
+    checked.length > 0 ? `Checked: ${checked.join(", ")}.` : null,
+    missingEnv.length > 0 ? `Missing env: ${missingEnv.join(", ")}.` : null,
+    unavailableCli.length > 0 ? `CLI unavailable: ${unavailableCli.join(", ")}.` : null,
+    "Restart or reinstall the daemon after changing API keys or CLI installs so its saved environment updates.",
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+
+  return new Error(details);
+}
+
 async function resolveAgentModel({
   env,
   pageContent,
@@ -521,7 +596,17 @@ async function resolveAgentModel({
 
   if (requestedModel.kind === "fixed") {
     if (requestedModel.transport === "cli") {
-      throw new Error("CLI models are not supported in the daemon");
+      return {
+        provider: "cli",
+        model: null,
+        maxOutputTokens,
+        apiKeys,
+        transport: "cli" as const,
+        cliProvider: requestedModel.cliProvider,
+        cliModel: requestedModel.cliModel,
+        userModelId: requestedModel.userModelId,
+        cliConfig: configForCli?.cli ?? null,
+      };
     }
     if (requestedModel.transport === "openrouter") {
       const provider = "openrouter";
@@ -536,7 +621,7 @@ async function resolveAgentModel({
   }
 
   if (!isFallbackModel) {
-    throw new Error("No model available for agent");
+    throw buildNoAgentModelAvailableError({ attempts: [], envForAuto, cliAvailability });
   }
 
   const estimatedPromptTokens = Math.ceil(pageContent.length / 4);
@@ -552,8 +637,13 @@ async function resolveAgentModel({
     cliAvailability,
   });
 
+  // Prefer API-key-based models first, fall back to CLI
+  let cliAttempt: (typeof attempts)[number] | null = null;
   for (const attempt of attempts) {
-    if (attempt.transport === "cli") continue;
+    if (attempt.transport === "cli") {
+      if (!cliAttempt) cliAttempt = attempt;
+      continue;
+    }
     if (!envHasKey(envForAuto, attempt.requiredEnv)) continue;
     if (attempt.transport === "openrouter") {
       const modelId = attempt.userModelId.replace(/^openrouter\//i, "");
@@ -565,7 +655,25 @@ async function resolveAgentModel({
     return { ...resolved, maxOutputTokens, apiKeys };
   }
 
-  throw new Error("No model available for agent");
+  if (cliAttempt) {
+    const parsed = parseCliUserModelId(cliAttempt.userModelId);
+    if (!cliAvailability[parsed.provider]) {
+      throw buildNoAgentModelAvailableError({ attempts, envForAuto, cliAvailability });
+    }
+    return {
+      provider: "cli",
+      model: null,
+      maxOutputTokens,
+      apiKeys,
+      transport: "cli" as const,
+      cliProvider: parsed.provider,
+      cliModel: parsed.model,
+      userModelId: cliAttempt.userModelId,
+      cliConfig: configForCli?.cli ?? null,
+    };
+  }
+
+  throw buildNoAgentModelAvailableError({ attempts, envForAuto, cliAvailability });
 }
 
 export async function streamAgentResponse({
@@ -607,11 +715,29 @@ export async function streamAgentResponse({
     automationEnabled,
   });
 
-  const { provider, model, maxOutputTokens, apiKeys } = await resolveAgentModel({
+  const resolved = await resolveAgentModel({
     env,
     pageContent,
     modelOverride,
   });
+
+  if ("transport" in resolved && resolved.transport === "cli") {
+    const prompt = flattenAgentForCli({ systemPrompt, messages: normalizedMessages });
+    const result = await runCliModel({
+      provider: resolved.cliProvider,
+      prompt,
+      model: resolved.cliModel,
+      allowTools: false,
+      timeoutMs: 120_000,
+      env,
+      config: resolved.cliConfig,
+    });
+    onChunk(result.text);
+    onAssistant({ role: "assistant", content: result.text } as unknown as AssistantMessage);
+    return;
+  }
+
+  const { provider, model, maxOutputTokens, apiKeys } = resolved;
   const apiKey = resolveApiKeyForModel({ provider, apiKeys });
 
   const stream = streamSimple(
@@ -685,11 +811,27 @@ export async function completeAgentResponse({
     automationEnabled,
   });
 
-  const { provider, model, maxOutputTokens, apiKeys } = await resolveAgentModel({
+  const resolved = await resolveAgentModel({
     env,
     pageContent,
     modelOverride,
   });
+
+  if ("transport" in resolved && resolved.transport === "cli") {
+    const prompt = flattenAgentForCli({ systemPrompt, messages: normalizedMessages });
+    const result = await runCliModel({
+      provider: resolved.cliProvider,
+      prompt,
+      model: resolved.cliModel,
+      allowTools: false,
+      timeoutMs: 120_000,
+      env,
+      config: resolved.cliConfig,
+    });
+    return { role: "assistant", content: result.text } as unknown as AssistantMessage;
+  }
+
+  const { provider, model, maxOutputTokens, apiKeys } = resolved;
   const apiKey = resolveApiKeyForModel({ provider, apiKeys });
 
   const assistant = await completeSimple(

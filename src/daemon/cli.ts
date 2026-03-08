@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { buildDaemonHelp } from "../run/help.js";
 import { resolveCliEntrypointPathForService } from "./cli-entrypoint.js";
-import { readDaemonConfig, writeDaemonConfig } from "./config.js";
+import {
+  daemonConfigPrimaryToken,
+  daemonConfigTokens,
+  readDaemonConfig,
+  writeDaemonConfig,
+} from "./config.js";
 import { DAEMON_HOST, DAEMON_PORT_DEFAULT } from "./constants.js";
 import { mergeDaemonEnv } from "./env-merge.js";
 import { buildEnvSnapshotFromEnv } from "./env-snapshot.js";
@@ -329,9 +334,18 @@ export async function handleDaemonRequest({
     const dev = hasArg(normalizedArgv, "--dev");
 
     const envSnapshot = buildEnvSnapshotFromEnv(envForRun);
+    const existingConfig = await readDaemonConfig({ env: envForRun });
+    const mergedTokens = existingConfig
+      ? Array.from(new Set([...daemonConfigTokens(existingConfig), token.trim()]))
+      : [token.trim()];
     const configPath = await writeDaemonConfig({
       env: envForRun,
-      config: { token, port, env: envSnapshot },
+      config: {
+        token: existingConfig ? daemonConfigPrimaryToken(existingConfig) : token,
+        tokens: mergedTokens,
+        port,
+        env: envSnapshot,
+      },
     });
 
     const { programArguments, workingDirectory } = await resolveDaemonProgramArguments({ dev });
@@ -379,7 +393,7 @@ export async function handleDaemonRequest({
       }
     })();
     const authed = healthy
-      ? await checkAuth({ fetchImpl, token: cfg.token, port: cfg.port })
+      ? await checkAuth({ fetchImpl, token: daemonConfigPrimaryToken(cfg), port: cfg.port })
       : false;
 
     stdout.write(`${service.label}: ${loaded ? service.loadedText : service.notLoadedText}\n`);
@@ -430,7 +444,7 @@ export async function handleDaemonRequest({
     const authed = healthy
       ? await checkAuthWithRetries({
           fetchImpl,
-          token: cfg.token,
+          token: daemonConfigPrimaryToken(cfg),
           port: cfg.port,
           attempts: 5,
           delayMs: 400,
@@ -464,6 +478,14 @@ export async function handleDaemonRequest({
       throw new Error("Daemon not configured");
     }
     const mergedEnv = mergeDaemonEnv({ envForRun, snapshot: cfg.env });
+    // Apply snapshot env to process.env so child processes (yt-dlp, ffmpeg,
+    // deno, tesseract) inherit the correct PATH and tool config under
+    // launchd/systemd where the default environment is minimal.
+    for (const [key, value] of Object.entries(cfg.env)) {
+      if (typeof value === "string") {
+        process.env[key] = value;
+      }
+    }
     await runDaemonServer({ env: mergedEnv, fetchImpl, config: cfg });
     return true;
   }

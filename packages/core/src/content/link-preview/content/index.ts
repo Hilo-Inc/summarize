@@ -1,9 +1,9 @@
-import type { FirecrawlScrapeResult, LinkPreviewDeps } from "../deps.js";
-import type { CacheMode, FirecrawlDiagnostics, TranscriptResolution } from "../types.js";
-import type { ExtractedLinkContent, FetchLinkContentOptions, MarkdownMode } from "./types.js";
 import { resolveTranscriptForLink } from "../../transcript/index.js";
+import { resolveTranscriptionAvailability } from "../../transcript/providers/transcription-start.js";
 import { resolveTranscriptionConfig } from "../../transcript/transcription-config.js";
 import { isDirectMediaUrl, isYouTubeUrl } from "../../url.js";
+import type { FirecrawlScrapeResult, LinkPreviewDeps } from "../deps.js";
+import type { CacheMode, FirecrawlDiagnostics, TranscriptResolution } from "../types.js";
 import { normalizeForPrompt } from "./cleaner.js";
 import { MIN_READABILITY_CONTENT_CHARACTERS } from "./constants.js";
 import { fetchHtmlDocument, fetchWithFirecrawl } from "./fetcher.js";
@@ -18,6 +18,7 @@ import {
   isTwitterStatusUrl,
   toNitterUrls,
 } from "./twitter-utils.js";
+import type { ExtractedLinkContent, FetchLinkContentOptions, MarkdownMode } from "./types.js";
 import {
   appendNote,
   ensureTranscriptDiagnostics,
@@ -57,6 +58,8 @@ export async function fetchLinkContent(
     transcription: deps.transcription ?? null,
     falApiKey: deps.falApiKey,
     groqApiKey: deps.groqApiKey,
+    assemblyaiApiKey: deps.assemblyaiApiKey,
+    geminiApiKey: deps.geminiApiKey,
     openaiApiKey: deps.openaiApiKey,
   });
   const timeoutMs = resolveTimeoutMs(options);
@@ -75,9 +78,12 @@ export async function fetchLinkContent(
 
   const spotifyEpisodeId = extractSpotifyEpisodeId(url);
   if (spotifyEpisodeId) {
-    if (!transcription.openaiApiKey && !transcription.falApiKey) {
+    const transcriptionAvailability = await resolveTranscriptionAvailability({
+      transcription,
+    });
+    if (!transcriptionAvailability.hasAnyProvider) {
       throw new Error(
-        "Spotify episode transcription requires OPENAI_API_KEY or FAL_KEY (Whisper); otherwise you may only get a captcha/recaptcha HTML page.",
+        "Spotify episode transcription requires a transcription provider (install whisper-cpp or set GROQ_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or FAL_KEY); otherwise you may only get a captcha/recaptcha HTML page.",
       );
     }
 
@@ -135,9 +141,12 @@ export async function fetchLinkContent(
 
   const appleIds = extractApplePodcastIds(url);
   if (appleIds) {
-    if (!transcription.openaiApiKey && !transcription.falApiKey) {
+    const transcriptionAvailability = await resolveTranscriptionAvailability({
+      transcription,
+    });
+    if (!transcriptionAvailability.hasAnyProvider) {
       throw new Error(
-        "Apple Podcasts transcription requires OPENAI_API_KEY or FAL_KEY (Whisper); otherwise you may only get a slow/blocked HTML page.",
+        "Apple Podcasts transcription requires a transcription provider (install whisper-cpp or set GROQ_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or FAL_KEY); otherwise you may only get a slow/blocked HTML page.",
       );
     }
 
@@ -370,12 +379,19 @@ export async function fetchLinkContent(
       return null;
     }
 
-    deps.onProgress?.({ kind: "bird-start", url });
+    deps.onProgress?.({ kind: "bird-start", url, client: null });
     try {
       const tweet = await deps.readTweetWithBird({ url, timeoutMs });
       const text = tweet?.text?.trim() ?? "";
+      const tweetClient = tweet?.client === "xurl" ? "xurl" : "bird";
       if (text.length === 0) {
-        deps.onProgress?.({ kind: "bird-done", url, ok: false, textBytes: null });
+        deps.onProgress?.({
+          kind: "bird-done",
+          url,
+          client: tweetClient,
+          ok: false,
+          textBytes: null,
+        });
         return null;
       }
 
@@ -431,13 +447,13 @@ export async function fetchLinkContent(
             : null,
         isVideoOnly: false,
         diagnostics: {
-          strategy: "bird",
+          strategy: tweetClient,
           firecrawl: firecrawlDiagnostics,
           markdown: {
             requested: markdownRequested,
             used: false,
             provider: null,
-            notes: "Bird tweet fetch provides plain text",
+            notes: `${tweetClient} tweet fetch provides plain text`,
           },
           transcript: transcriptDiagnostics,
         },
@@ -445,13 +461,14 @@ export async function fetchLinkContent(
       deps.onProgress?.({
         kind: "bird-done",
         url,
+        client: tweetClient,
         ok: true,
         textBytes: Buffer.byteLength(result.content, "utf8"),
       });
       return result;
     } catch (error) {
       birdError = error;
-      deps.onProgress?.({ kind: "bird-done", url, ok: false, textBytes: null });
+      deps.onProgress?.({ kind: "bird-done", url, client: null, ok: false, textBytes: null });
       return null;
     }
   };
@@ -596,10 +613,10 @@ export async function fetchLinkContent(
   });
   if (twitterStatus && isBlockedTwitterContent(htmlExtracted.content)) {
     const birdNote = !deps.readTweetWithBird
-      ? "Bird not available"
+      ? "X CLI not available"
       : birdError
-        ? `Bird failed: ${birdError instanceof Error ? birdError.message : String(birdError)}`
-        : "Bird returned no text";
+        ? `X CLI failed: ${birdError instanceof Error ? birdError.message : String(birdError)}`
+        : "X CLI returned no text";
     const nitterNote =
       nitterUrls.length > 0
         ? nitterError

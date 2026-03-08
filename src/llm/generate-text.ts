@@ -1,10 +1,13 @@
 import type { Context, Message } from "@mariozechner/pi-ai";
 import { completeSimple, streamSimple } from "@mariozechner/pi-ai";
-import type { OpenAiClientConfig } from "./providers/types.js";
-import type { LlmTokenUsage } from "./types.js";
 import { createUnsupportedFunctionalityError } from "./errors.js";
 import { parseGatewayStyleModelId } from "./model-id.js";
 import { type Prompt, userTextAndImageMessage } from "./prompt.js";
+import {
+  resolveOpenAiCompatibleClientConfigForProvider,
+  supportsDocumentAttachments,
+  supportsStreaming,
+} from "./provider-capabilities.js";
 import {
   completeAnthropicDocument,
   completeAnthropicText,
@@ -25,6 +28,8 @@ import {
   resolveOpenAiClientConfig,
 } from "./providers/openai.js";
 import { extractText } from "./providers/shared.js";
+import type { OpenAiClientConfig } from "./providers/types.js";
+import type { LlmTokenUsage } from "./types.js";
 import { normalizeTokenUsage } from "./usage.js";
 
 export type LlmApiKeys = {
@@ -151,6 +156,27 @@ function resolveEffectiveTemperature({
   return temperature;
 }
 
+function resolveGoogleEmptyResponseFallbackModelId(modelId: string): string | null {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized.startsWith("google/")) return null;
+  const raw = normalized.slice("google/".length);
+  if (!raw.includes("preview") && !raw.includes("exp")) return null;
+  if (raw === "gemini-2.5-flash") return null;
+  return "google/gemini-2.5-flash";
+}
+
+function isGoogleEmptySummaryError(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof (error as { message?: unknown })?.message === "string"
+          ? String((error as { message?: unknown }).message)
+          : "";
+  return /empty summary/i.test(message);
+}
+
 export async function generateTextWithModelId({
   modelId,
   apiKeys,
@@ -164,6 +190,7 @@ export async function generateTextWithModelId({
   anthropicBaseUrlOverride,
   googleBaseUrlOverride,
   xaiBaseUrlOverride,
+  zaiBaseUrlOverride,
   forceChatCompletions,
   retries = 0,
   onRetry,
@@ -180,6 +207,7 @@ export async function generateTextWithModelId({
   anthropicBaseUrlOverride?: string | null;
   googleBaseUrlOverride?: string | null;
   xaiBaseUrlOverride?: string | null;
+  zaiBaseUrlOverride?: string | null;
   forceChatCompletions?: boolean;
   retries?: number;
   onRetry?: (notice: RetryNotice) => void;
@@ -199,6 +227,11 @@ export async function generateTextWithModelId({
   if (documentAttachment) {
     if (attachments.length !== 1) {
       throw new Error("Internal error: document attachments cannot be combined with other inputs.");
+    }
+    if (!supportsDocumentAttachments(parsed.provider)) {
+      throw createUnsupportedFunctionalityError(
+        `document attachments are not supported for ${parsed.provider}/... models`,
+      );
     }
     if (parsed.provider === "anthropic") {
       const apiKey = apiKeys.anthropicApiKey;
@@ -229,11 +262,10 @@ export async function generateTextWithModelId({
     }
 
     if (parsed.provider === "openai") {
-      const openaiConfig = resolveOpenAiClientConfig({
-        apiKeys: {
-          openaiApiKey: apiKeys.openaiApiKey,
-          openrouterApiKey: apiKeys.openrouterApiKey,
-        },
+      const openaiConfig = resolveOpenAiCompatibleClientConfigForProvider({
+        provider: "openai",
+        openaiApiKey: apiKeys.openaiApiKey,
+        openrouterApiKey: apiKeys.openrouterApiKey,
         forceOpenRouter,
         openaiBaseUrlOverride,
         forceChatCompletions,
@@ -262,38 +294,58 @@ export async function generateTextWithModelId({
         throw new Error(
           "Missing GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY / GOOGLE_API_KEY) for google/... model",
         );
-      const result = await completeGoogleDocument({
-        modelId: parsed.model,
-        apiKey,
-        promptText: prompt.userText,
-        document: documentAttachment,
-        maxOutputTokens,
-        temperature: effectiveTemperature,
-        timeoutMs,
-        fetchImpl,
-        googleBaseUrlOverride,
-      });
-      return {
-        text: result.text,
-        canonicalModelId: parsed.canonical,
-        provider: parsed.provider,
-        usage: result.usage,
-      };
+      try {
+        const result = await completeGoogleDocument({
+          modelId: parsed.model,
+          apiKey,
+          promptText: prompt.userText,
+          document: documentAttachment,
+          maxOutputTokens,
+          temperature: effectiveTemperature,
+          timeoutMs,
+          fetchImpl,
+          googleBaseUrlOverride,
+        });
+        return {
+          text: result.text,
+          canonicalModelId: parsed.canonical,
+          provider: parsed.provider,
+          usage: result.usage,
+        };
+      } catch (error) {
+        const fallbackModelId =
+          isGoogleEmptySummaryError(error) &&
+          resolveGoogleEmptyResponseFallbackModelId(parsed.canonical);
+        if (!fallbackModelId) throw error;
+        return generateTextWithModelId({
+          modelId: fallbackModelId,
+          apiKeys,
+          prompt,
+          temperature,
+          maxOutputTokens,
+          timeoutMs,
+          fetchImpl,
+          forceOpenRouter,
+          openaiBaseUrlOverride,
+          anthropicBaseUrlOverride,
+          googleBaseUrlOverride,
+          xaiBaseUrlOverride,
+          zaiBaseUrlOverride,
+          forceChatCompletions,
+          retries,
+          onRetry,
+        });
+      }
     }
-
-    throw createUnsupportedFunctionalityError(
-      `document attachments are not supported for ${parsed.provider}/... models`,
-    );
   }
 
   const context = promptToContext(prompt);
 
   const resolveOpenAiConfig = (): OpenAiClientConfig =>
-    resolveOpenAiClientConfig({
-      apiKeys: {
-        openaiApiKey: apiKeys.openaiApiKey,
-        openrouterApiKey: apiKeys.openrouterApiKey,
-      },
+    resolveOpenAiCompatibleClientConfigForProvider({
+      provider: "openai",
+      openaiApiKey: apiKeys.openaiApiKey,
+      openrouterApiKey: apiKeys.openrouterApiKey,
       forceOpenRouter,
       openaiBaseUrlOverride,
       forceChatCompletions,
@@ -396,10 +448,22 @@ export async function generateTextWithModelId({
       }
 
       if (parsed.provider === "zai") {
-        const apiKey = apiKeys.openaiApiKey;
-        if (!apiKey) throw new Error("Missing Z_AI_API_KEY for zai/... model");
-        const model = resolveZaiModel({ modelId: parsed.model, context, openaiBaseUrlOverride });
-        const result = await completeSimpleText({ model, apiKey, signal: controller.signal });
+        const openaiConfig = resolveOpenAiCompatibleClientConfigForProvider({
+          provider: "zai",
+          openaiApiKey: apiKeys.openaiApiKey,
+          openrouterApiKey: apiKeys.openrouterApiKey,
+          openaiBaseUrlOverride: zaiBaseUrlOverride ?? openaiBaseUrlOverride,
+        });
+        const model = resolveZaiModel({
+          modelId: parsed.model,
+          context,
+          openaiBaseUrlOverride: openaiConfig.baseURL,
+        });
+        const result = await completeSimpleText({
+          model,
+          apiKey: openaiConfig.apiKey,
+          signal: controller.signal,
+        });
         return {
           text: result.text,
           canonicalModelId: parsed.canonical,
@@ -409,10 +473,22 @@ export async function generateTextWithModelId({
       }
 
       if (parsed.provider === "nvidia") {
-        const apiKey = apiKeys.openaiApiKey;
-        if (!apiKey) throw new Error("Missing NVIDIA_API_KEY for nvidia/... model");
-        const model = resolveNvidiaModel({ modelId: parsed.model, context, openaiBaseUrlOverride });
-        const result = await completeSimpleText({ model, apiKey, signal: controller.signal });
+        const openaiConfig = resolveOpenAiCompatibleClientConfigForProvider({
+          provider: "nvidia",
+          openaiApiKey: apiKeys.openaiApiKey,
+          openrouterApiKey: apiKeys.openrouterApiKey,
+          openaiBaseUrlOverride,
+        });
+        const model = resolveNvidiaModel({
+          modelId: parsed.model,
+          context,
+          openaiBaseUrlOverride: openaiConfig.baseURL,
+        });
+        const result = await completeSimpleText({
+          model,
+          apiKey: openaiConfig.apiKey,
+          signal: controller.signal,
+        });
         return {
           text: result.text,
           canonicalModelId: parsed.canonical,
@@ -446,6 +522,30 @@ export async function generateTextWithModelId({
         error instanceof DOMException && error.name === "AbortError"
           ? new Error(`LLM request timed out after ${timeoutMs}ms (model ${parsed.canonical}).`)
           : error;
+      const googleFallbackModelId =
+        parsed.provider === "google" &&
+        isGoogleEmptySummaryError(normalizedError) &&
+        resolveGoogleEmptyResponseFallbackModelId(parsed.canonical);
+      if (googleFallbackModelId) {
+        return generateTextWithModelId({
+          modelId: googleFallbackModelId,
+          apiKeys,
+          prompt,
+          temperature,
+          maxOutputTokens,
+          timeoutMs,
+          fetchImpl,
+          forceOpenRouter,
+          openaiBaseUrlOverride,
+          anthropicBaseUrlOverride,
+          googleBaseUrlOverride,
+          xaiBaseUrlOverride,
+          zaiBaseUrlOverride,
+          forceChatCompletions,
+          retries: Math.max(0, maxRetries - attempt),
+          onRetry,
+        });
+      }
       if (parsed.provider === "anthropic") {
         const normalized = normalizeAnthropicModelAccessError(normalizedError, parsed.model);
         if (normalized) throw normalized;
@@ -555,6 +655,11 @@ export async function streamTextWithContext({
   lastError: () => unknown;
 }> {
   const parsed = parseGatewayStyleModelId(modelId);
+  if (!supportsStreaming(parsed.provider)) {
+    throw createUnsupportedFunctionalityError(
+      `streaming is not supported for ${parsed.provider}/... models`,
+    );
+  }
   const effectiveTemperature = resolveEffectiveTemperature({ parsed, temperature });
   void fetchImpl;
 
@@ -738,37 +843,14 @@ export async function streamTextWithContext({
     }
 
     if (parsed.provider === "openai" || parsed.provider === "zai" || parsed.provider === "nvidia") {
-      const openaiConfig: OpenAiClientConfig = (() => {
-        if (parsed.provider === "openai") {
-          return resolveOpenAiClientConfig({
-            apiKeys: {
-              openaiApiKey: apiKeys.openaiApiKey,
-              openrouterApiKey: apiKeys.openrouterApiKey,
-            },
-            forceOpenRouter,
-            openaiBaseUrlOverride,
-            forceChatCompletions,
-          });
-        }
-        if (parsed.provider === "zai") {
-          const key = apiKeys.openaiApiKey;
-          if (!key) throw new Error("Missing Z_AI_API_KEY for zai/... model");
-          return {
-            apiKey: key,
-            baseURL: openaiBaseUrlOverride ?? "https://api.z.ai/api/paas/v4",
-            useChatCompletions: true,
-            isOpenRouter: false,
-          };
-        }
-        const key = apiKeys.openaiApiKey;
-        if (!key) throw new Error("Missing NVIDIA_API_KEY for nvidia/... model");
-        return {
-          apiKey: key,
-          baseURL: openaiBaseUrlOverride ?? "https://integrate.api.nvidia.com/v1",
-          useChatCompletions: true,
-          isOpenRouter: false,
-        };
-      })();
+      const openaiConfig: OpenAiClientConfig = resolveOpenAiCompatibleClientConfigForProvider({
+        provider: parsed.provider,
+        openaiApiKey: apiKeys.openaiApiKey,
+        openrouterApiKey: apiKeys.openrouterApiKey,
+        forceOpenRouter,
+        openaiBaseUrlOverride,
+        forceChatCompletions,
+      });
 
       const model = resolveOpenAiModel({ modelId: parsed.model, context, openaiConfig });
       const stream = streamSimple(model, context, {

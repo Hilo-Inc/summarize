@@ -10,7 +10,7 @@ const pngData = Buffer.from(
   "base64",
 );
 
-function createTtyStream() {
+function createTtyStream(columns = 120) {
   let text = "";
   const stream = new Writable({
     write(chunk, _encoding, callback) {
@@ -19,7 +19,19 @@ function createTtyStream() {
     },
   });
   (stream as unknown as { isTTY?: boolean }).isTTY = true;
-  (stream as unknown as { columns?: number }).columns = 120;
+  (stream as unknown as { columns?: number }).columns = columns;
+  return { stream, getText: () => text };
+}
+
+function createTtyStreamWithoutColumns() {
+  let text = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      text += chunk.toString();
+      callback();
+    },
+  });
+  (stream as unknown as { isTTY?: boolean }).isTTY = true;
   return { stream, getText: () => text };
 }
 
@@ -76,6 +88,7 @@ describe("renderSlidesInline", () => {
     expect(result.rendered).toBe(1);
     expect(output.getText()).toContain("Slide 1");
     expect(output.getText()).toContain("\u001b_G");
+    expect(output.getText()).toContain("c=64");
   });
 
   it("skips rendering when stdout is not a TTY", async () => {
@@ -118,6 +131,77 @@ describe("renderSlidesInline", () => {
     expect(result.protocol).toBe("iterm");
     expect(result.rendered).toBe(1);
     expect(output.getText()).toContain("\u001b]1337;File=");
+    expect(output.getText()).toContain("width=64");
+  });
+
+  it("uses COLUMNS when stdout columns are unavailable", async () => {
+    const imagePath = await createTempSlide();
+    const output = createTtyStreamWithoutColumns();
+    const result = await renderSlidesInline({
+      slides: [{ index: 1, timestamp: 9.1, imagePath }],
+      mode: "auto",
+      env: { TERM: "xterm-kitty", COLUMNS: "90" },
+      stdout: output.stream,
+    });
+    expect(result.protocol).toBe("kitty");
+    expect(result.rendered).toBe(1);
+    expect(output.getText()).toContain("c=54");
+  });
+
+  it("caps inline width at double the previous size on wide terminals", async () => {
+    const imagePath = await createTempSlide();
+    const output = createTtyStream(200);
+    const result = await renderSlidesInline({
+      slides: [{ index: 1, timestamp: 9.1, imagePath }],
+      mode: "auto",
+      env: { TERM: "xterm-kitty" },
+      stdout: output.stream,
+    });
+    expect(result.protocol).toBe("kitty");
+    expect(result.rendered).toBe(1);
+    expect(output.getText()).toContain("c=64");
+  });
+
+  it("renders iTerm images when WezTerm is detected", async () => {
+    const imagePath = await createTempSlide();
+    const output = createTtyStream();
+    const result = await renderSlidesInline({
+      slides: [{ index: 1, timestamp: 5.1, imagePath }],
+      mode: "auto",
+      env: { TERM_PROGRAM: "WezTerm" },
+      stdout: output.stream,
+    });
+    expect(result.protocol).toBe("iterm");
+    expect(result.rendered).toBe(1);
+    expect(output.getText()).toContain("\u001b]1337;File=");
+  });
+
+  it("renders iTerm images when WezTerm is detected via WEZTERM_EXECUTABLE", async () => {
+    const imagePath = await createTempSlide();
+    const output = createTtyStream();
+    const result = await renderSlidesInline({
+      slides: [{ index: 1, timestamp: 5.4, imagePath }],
+      mode: "auto",
+      env: { WEZTERM_EXECUTABLE: "/Applications/WezTerm.app/Contents/MacOS/wezterm" },
+      stdout: output.stream,
+    });
+    expect(result.protocol).toBe("iterm");
+    expect(result.rendered).toBe(1);
+    expect(output.getText()).toContain("\u001b]1337;File=");
+  });
+
+  it("does not render inline images for unsupported terminals", async () => {
+    const imagePath = await createTempSlide();
+    const output = createTtyStream();
+    const result = await renderSlidesInline({
+      slides: [{ index: 1, timestamp: 4.2, imagePath }],
+      mode: "auto",
+      env: { TERM_PROGRAM: "Terminal.app" },
+      stdout: output.stream,
+    });
+    expect(result.protocol).toBe("none");
+    expect(result.rendered).toBe(0);
+    expect(output.getText()).toBe("");
   });
 
   it("prints a missing image notice when slides are absent", async () => {

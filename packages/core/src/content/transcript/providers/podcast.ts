@@ -1,12 +1,12 @@
-import type { ProviderContext, ProviderFetchOptions, ProviderResult } from "../types.js";
-import type { PodcastFlowContext } from "./podcast/flow-context.js";
 import { isDirectMediaUrl } from "../../url.js";
 import { resolveTranscriptionConfig } from "../transcription-config.js";
+import type { ProviderContext, ProviderFetchOptions, ProviderResult } from "../types.js";
 import {
   fetchAppleTranscriptFromEmbeddedHtml,
   fetchAppleTranscriptFromItunesLookup,
 } from "./podcast/apple-flow.js";
 import { FEED_HINT_URL_PATTERN, PODCAST_PLATFORM_HOST_PATTERN } from "./podcast/constants.js";
+import type { PodcastFlowContext } from "./podcast/flow-context.js";
 import { resolvePodcastFeedUrlFromItunesSearch } from "./podcast/itunes.js";
 import {
   downloadCappedBytes,
@@ -20,18 +20,24 @@ import {
   type TranscriptionResult,
   transcribeMediaUrl,
 } from "./podcast/media.js";
-import { buildWhisperResult, joinNotes } from "./podcast/results.js";
 import {
-  decodeXmlEntities,
+  buildNoTranscriptResult,
+  tryFeedEnclosureTranscript,
+  tryOgAudioTranscript,
+  tryPodcastTranscriptFromFeed,
+  tryPodcastYtDlpTranscript,
+} from "./podcast/provider-flow.js";
+import {
   extractEnclosureForEpisode,
-  extractEnclosureFromFeed,
   extractItemDurationSeconds,
   looksLikeRssOrAtomFeed,
-  tryFetchTranscriptFromFeedXml,
 } from "./podcast/rss.js";
 import { fetchSpotifyTranscript } from "./podcast/spotify-flow.js";
 import { looksLikeBlockedHtml } from "./podcast/spotify.js";
-import { resolveTranscriptionAvailability } from "./transcription-start.js";
+import {
+  buildMissingTranscriptionProviderResult,
+  resolveTranscriptProviderCapabilities,
+} from "./transcription-capability.js";
 
 export const canHandle = ({ url, html }: ProviderContext): boolean => {
   // Direct media URLs (e.g., .mp3, .wav) should be handled by the generic provider
@@ -54,20 +60,18 @@ export const fetchTranscript = async (
     if (!attemptedProviders.includes(provider)) attemptedProviders.push(provider);
   };
 
-  const transcriptionAvailability = await resolveTranscriptionAvailability({
+  const transcriptionCapabilities = await resolveTranscriptProviderCapabilities({
     transcription,
-  });
-
-  const missingTranscriptionProviderResult = (): ProviderResult => ({
-    text: null,
-    source: null,
-    attemptedProviders,
-    metadata: { provider: "podcast", reason: "missing_transcription_keys" },
-    notes: "Missing transcription provider (install whisper-cpp or set OPENAI_API_KEY/FAL_KEY)",
+    ytDlpPath: options.ytDlpPath,
   });
 
   const ensureTranscriptionProvider = (): ProviderResult | null => {
-    return !transcriptionAvailability.hasAnyProvider ? missingTranscriptionProviderResult() : null;
+    return !transcriptionCapabilities.canTranscribe
+      ? buildMissingTranscriptionProviderResult({
+          attemptedProviders,
+          metadata: { provider: "podcast", reason: "missing_transcription_keys" },
+        })
+      : null;
   };
 
   const progress = {
@@ -88,6 +92,8 @@ export const fetchTranscript = async (
   const flow: PodcastFlowContext = {
     context,
     options,
+    transcription,
+    feedHtml: typeof context.html === "string" ? context.html : null,
     attemptedProviders,
     notes,
     pushOnce,
@@ -95,31 +101,8 @@ export const fetchTranscript = async (
     transcribe,
   };
 
-  const feedHtml = typeof context.html === "string" ? context.html : null;
-  if (feedHtml && /podcast:transcript/i.test(feedHtml)) {
-    pushOnce("podcastTranscript");
-    const direct = await tryFetchTranscriptFromFeedXml({
-      fetchImpl: options.fetch,
-      feedXml: feedHtml,
-      episodeTitle: null,
-      notes,
-    });
-    if (direct) {
-      return {
-        text: direct.text,
-        source: "podcastTranscript",
-        segments: options.transcriptTimestamps ? (direct.segments ?? null) : null,
-        attemptedProviders,
-        notes: joinNotes(notes),
-        metadata: {
-          provider: "podcast",
-          kind: "rss_podcast_transcript",
-          transcriptUrl: direct.transcriptUrl,
-          transcriptType: direct.transcriptType,
-        },
-      };
-    }
-  }
+  const directResult = await tryPodcastTranscriptFromFeed(flow);
+  if (directResult) return directResult;
 
   const spotifyResult = await fetchSpotifyTranscript(flow);
   if (spotifyResult) return spotifyResult;
@@ -130,122 +113,17 @@ export const fetchTranscript = async (
   const appleEmbeddedResult = await fetchAppleTranscriptFromEmbeddedHtml(flow);
   if (appleEmbeddedResult) return appleEmbeddedResult;
 
-  const feedEnclosureUrl = feedHtml ? extractEnclosureFromFeed(feedHtml) : null;
-  if (feedEnclosureUrl && feedHtml) {
-    const resolvedUrl = decodeXmlEntities(feedEnclosureUrl.enclosureUrl);
-    const durationSeconds = feedEnclosureUrl.durationSeconds;
-    try {
-      const missing = ensureTranscriptionProvider();
-      if (missing) return missing;
-      pushOnce("whisper");
-      const transcript = await transcribe({
-        url: resolvedUrl,
-        filenameHint: "episode.mp3",
-        durationSecondsHint: durationSeconds,
-      });
-      return buildWhisperResult({
-        attemptedProviders,
-        notes,
-        outcome: transcript,
-        includeProviderOnFailure: true,
-        metadata: {
-          provider: "podcast",
-          kind: "rss_enclosure",
-          enclosureUrl: resolvedUrl,
-          durationSeconds,
-        },
-      });
-    } catch (error) {
-      return {
-        text: null,
-        source: null,
-        attemptedProviders,
-        notes: `Podcast enclosure download failed: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: { provider: "podcast", kind: "rss_enclosure", enclosureUrl: resolvedUrl },
-      };
-    }
-  }
+  const enclosureResult = await tryFeedEnclosureTranscript(flow);
+  if (enclosureResult) return enclosureResult;
 
-  const ogAudioUrl = feedHtml ? extractOgAudioUrl(feedHtml) : null;
-  if (ogAudioUrl) {
-    attemptedProviders.push("whisper");
-    const result = await transcribe({
-      url: ogAudioUrl,
-      filenameHint: "audio.mp3",
-      durationSecondsHint: null,
-    });
-    if (result.text) {
-      notes.push("Used og:audio media (may be a preview clip, not the full episode)");
-      return buildWhisperResult({
-        attemptedProviders,
-        notes,
-        outcome: result,
-        metadata: {
-          provider: "podcast",
-          kind: "og_audio",
-          ogAudioUrl,
-        },
-      });
-    }
-    return {
-      text: null,
-      source: null,
-      attemptedProviders,
-      notes: result.error?.message ?? null,
-      metadata: { provider: "podcast", kind: "og_audio", ogAudioUrl },
-    };
-  }
+  const ogAudioResult = await tryOgAudioTranscript(flow);
+  if (ogAudioResult) return ogAudioResult;
 
-  if (options.ytDlpPath) {
-    attemptedProviders.push("yt-dlp");
-    try {
-      const mod = await import("./youtube/yt-dlp.js");
-      const result = await mod.fetchTranscriptWithYtDlp({
-        ytDlpPath: options.ytDlpPath,
-        transcription,
-        mediaCache: options.mediaCache ?? null,
-        url: context.url,
-        service: "podcast",
-        mediaKind: "audio",
-      });
-      if (result.notes.length > 0) notes.push(...result.notes);
-      return {
-        text: result.text,
-        source: result.text ? "yt-dlp" : null,
-        attemptedProviders,
-        notes: joinNotes(notes),
-        metadata: { provider: "podcast", kind: "yt_dlp", transcriptionProvider: result.provider },
-      };
-    } catch (error) {
-      return {
-        text: null,
-        source: null,
-        attemptedProviders,
-        notes: `yt-dlp transcription failed: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: { provider: "podcast", kind: "yt_dlp" },
-      };
-    }
-  }
+  const ytDlpResult = await tryPodcastYtDlpTranscript(flow);
+  if (ytDlpResult) return ytDlpResult;
 
-  const missing = ensureTranscriptionProvider();
-  if (missing) return missing;
-
-  return {
-    text: null,
-    source: null,
-    attemptedProviders,
-    metadata: { provider: "podcast", reason: "no_enclosure_and_no_yt_dlp" },
-  };
+  return buildNoTranscriptResult(flow);
 };
-
-function extractOgAudioUrl(html: string): string | null {
-  const match = html.match(/<meta\s+property=['"]og:audio['"]\s+content=['"]([^'"]+)['"][^>]*>/i);
-  if (!match?.[1]) return null;
-  const candidate = match[1].trim();
-  if (!candidate) return null;
-  if (!/^https?:\/\//i.test(candidate)) return null;
-  return candidate;
-}
 
 // Test-only exports (not part of the public API; may change without notice).
 export const __test__ = {

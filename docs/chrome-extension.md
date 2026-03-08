@@ -32,7 +32,8 @@ Dev (repo checkout):
 - Use: `pnpm summarize daemon install --token <TOKEN> --dev` (autostart service runs `src/cli.ts` via `tsx`, no `dist/` build required).
 - E2E (Playwright): `pnpm -C apps/chrome-extension test:e2e`
   - First run: `pnpm -C apps/chrome-extension exec playwright install chromium`
-  - Headless: `HEADLESS=1 pnpm -C apps/chrome-extension test:e2e` (headful is more reliable for extensions)
+  - Chromium runs headless by default.
+  - Visible debugging: `SHOW_UI=1 pnpm -C apps/chrome-extension test:e2e` or `HEADLESS=0 pnpm -C apps/chrome-extension test:e2e`
 
 ## Troubleshooting
 
@@ -49,8 +50,10 @@ Dev (repo checkout):
 - “Stream ended unexpectedly” / empty chat response:
   - The daemon likely stopped mid-stream. Restart it, then click “Try again”.
   - `summarize daemon restart`
+- Slide strip/gallery missing after a parallel slide run failure:
+  - Click the slide notice “Try again” button. If the dedicated slide run never started, the extension now requests a fresh summarize+slides run instead of reusing the summary-only run.
 - Tweet video not transcribing / no progress:
-  - Ensure `yt-dlp` is available on your PATH (or set `YT_DLP_PATH`) and you have a transcription provider (`whisper.cpp` installed or `OPENAI_API_KEY` / `FAL_KEY`).
+  - Ensure `yt-dlp` is available on your PATH (or set `YT_DLP_PATH`) and you have a transcription provider (`whisper.cpp` installed or `GROQ_API_KEY` / `ASSEMBLYAI_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` / `FAL_KEY`).
   - Re-run `summarize daemon install --token <TOKEN>` to refresh the daemon env snapshot (launchd won’t inherit your shell PATH).
 - “Could not establish connection / Receiving end does not exist”:
   - The content script wasn’t injected (yet), or Chrome blocked site access.
@@ -105,6 +108,11 @@ See `docs/media.md` for detection and transcript rules.
 
 - The slides toggle lights up on media-friendly URLs (YouTube/watch|shorts, youtu.be, direct media) or when the page reports video/audio. Defaults to Video on those pages.
 - Turning slides **on** refreshes the current summary and requests slide extraction (`yt-dlp`, `ffmpeg`). OCR text is opt-in (Advanced setting) and requires `tesseract`. Missing tools surface a footer notice with install instructions; restart the daemon after installing.
+- Active slide mode is slide-first:
+  - vertical image/text cards
+  - transcript-first text; OCR fallback
+  - text can appear before slide images finish extracting
+  - the large summary block is hidden while slide cards are active
 - Slides stay off elsewhere and the toggle is disabled on non-media pages.
 
 ## SPA Navigation
@@ -161,7 +169,7 @@ Problem: daemon must be secured; extension must discover and pair with it.
     - `summarize daemon install --token <TOKEN>` (macOS: LaunchAgent, Linux: systemd user, Windows: Scheduled Task)
     - `summarize daemon status`
   - “Copy command” button.
-- Daemon stores token in `~/.summarize/daemon.json`.
+- Daemon stores paired tokens in `~/.summarize/daemon.json`.
 - Extension stores token in `chrome.storage.local`.
 - If daemon unreachable or 401: show Setup state + troubleshooting.
 
@@ -245,7 +253,7 @@ Notes:
   - `summarize daemon run` (foreground; used by autostart service)
 - Ensure “single daemon”:
   - Stable service name + predictable unit/task path
-  - `install` replaces previous install and validates token match
+  - `install` reuses the same daemon service and appends new tokens instead of invalidating older paired browsers
 
 Platform details:
 

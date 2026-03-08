@@ -1,5 +1,5 @@
+import { NEGATIVE_TTL_MS } from "@steipete/summarize-core/content";
 import * as urlUtils from "@steipete/summarize-core/content/url";
-import type { UrlFlowContext } from "./types.js";
 import { buildExtractCacheKey, buildSlidesCacheKey } from "../../../cache.js";
 import { loadRemoteAsset } from "../../../content/asset.js";
 import {
@@ -14,19 +14,16 @@ import {
   type SlideExtractionResult,
   validateSlidesCache,
 } from "../../../slides/index.js";
-import { createOscProgressController } from "../../../tty/osc-progress.js";
-import { startSpinner } from "../../../tty/spinner.js";
 import {
   createThemeRenderer,
   resolveThemeNameFromSources,
   resolveTrueColor,
 } from "../../../tty/theme.js";
-import { createWebsiteProgress } from "../../../tty/website-progress.js";
 import { assertAssetMediaTypeSupported } from "../../attachments.js";
-import { readTweetWithBird } from "../../bird.js";
+import { readTweetWithPreferredClient } from "../../bird.js";
 import { UVX_TIP } from "../../constants.js";
 import { resolveTwitterCookies } from "../../cookies/twitter.js";
-import { hasBirdCli, hasUvxCli } from "../../env.js";
+import { hasBirdCli, hasUvxCli, hasXurlCli } from "../../env.js";
 import {
   estimateWhisperTranscriptionCostUsd,
   formatOptionalNumber,
@@ -39,9 +36,11 @@ import {
   fetchLinkContentWithBirdTip,
   logExtractionDiagnostics,
 } from "./extract.js";
+import { createUrlFlowProgress, writeSlidesBackgroundFailureWarning } from "./flow-progress.js";
 import { createMarkdownConverters } from "./markdown.js";
 import { createSlidesTerminalOutput } from "./slides-output.js";
 import { buildUrlPrompt, outputExtractedUrl, summarizeExtractedUrl } from "./summary.js";
+import type { UrlFlowContext } from "./types.js";
 
 export async function runUrlFlow({
   ctx,
@@ -112,73 +111,27 @@ export async function runUrlFlow({
         })
       : null;
 
-  const readTweetWithBirdClient = hasBirdCli(io.env)
-    ? ({ url, timeoutMs }: { url: string; timeoutMs: number }) =>
-        readTweetWithBird({ url, timeoutMs, env: io.env })
-    : null;
+  const readTweetWithBirdClient =
+    hasXurlCli(io.env) || hasBirdCli(io.env)
+      ? ({ url, timeoutMs }: { url: string; timeoutMs: number }) =>
+          readTweetWithPreferredClient({ url, timeoutMs, env: io.env })
+      : null;
 
   writeVerbose(io.stderr, flags.verbose, "extract start", flags.verboseColor, io.envForRun);
-  const oscProgress = createOscProgressController({
-    label: "Fetching website",
-    env: io.env,
-    isTty: flags.progressEnabled,
-    write: (data: string) => io.stderr.write(data),
-  });
-  oscProgress.setIndeterminate("Fetching website");
-  const spinner = startSpinner({
-    text: `${theme.label("Fetching website")}${theme.dim(" (connecting)…")}`,
-    enabled: flags.progressEnabled,
-    stream: io.stderr,
-    color: theme.palette.spinner,
-  });
-  const styleLabel = (text: string) => theme.label(text);
-  const styleDim = (text: string) => theme.dim(text);
-  const renderStatus = (label: string, detail = "…") => `${styleLabel(label)}${styleDim(detail)}`;
-  const renderStatusWithMeta = (label: string, meta: string, suffix = "…") =>
-    `${styleLabel(label)} ${meta}${styleDim(suffix)}`;
-  const renderStatusFromText = (text: string) => {
-    const match = text.match(/^([^:]+):(.*)$/);
-    if (!match) return styleLabel(text);
-    return `${styleLabel(match[1])}${styleDim(`:${match[2]}`)}`;
-  };
-  const handleSignal = () => {
-    try {
-      spinner.stopAndClear();
-    } catch {
-      // ignore
-    }
-    oscProgress.clear();
-  };
-  const handleSigint = () => {
-    handleSignal();
-    process.exit(130);
-  };
-  const handleSigterm = () => {
-    handleSignal();
-    process.exit(143);
-  };
-  if (flags.progressEnabled) {
-    process.once("SIGINT", handleSigint);
-    process.once("SIGTERM", handleSigterm);
-  }
-  if (!hooks.onSlidesProgress && flags.progressEnabled) {
-    hooks.onSlidesProgress = (text: string) => {
-      const match = text.match(/(\d{1,3})%/);
-      const percent = match ? Number(match[1]) : null;
-      spinner.setText(renderStatusFromText(text));
-      if (Number.isFinite(percent) && percent !== null) {
-        oscProgress.setPercent("Slides", Math.max(0, Math.min(100, percent)));
-      } else {
-        oscProgress.setIndeterminate("Slides");
-      }
-    };
-  }
-  const websiteProgress = createWebsiteProgress({
-    enabled: flags.progressEnabled,
+  const {
+    handleSigint,
+    handleSigterm,
+    pauseProgress,
+    progressStatus,
+    renderStatus,
+    renderStatusFromText,
+    renderStatusWithMeta,
     spinner,
-    oscProgress,
-    theme,
-  });
+    stopProgress,
+    styleDim,
+    styleLabel,
+    websiteProgress,
+  } = createUrlFlowProgress({ ctx, theme });
 
   const cacheStore = cacheState.mode === "default" ? cacheState.store : null;
   const transcriptCache = cacheStore ? cacheStore.transcriptCache : null;
@@ -191,6 +144,7 @@ export async function runUrlFlow({
       env: io.envForRun,
       falApiKey: model.apiStatus.falApiKey,
       groqApiKey: model.apiStatus.groqApiKey,
+      assemblyaiApiKey: model.apiStatus.assemblyaiApiKey,
       openaiApiKey: model.apiStatus.openaiTranscriptionKey,
     },
     scrapeWithFirecrawl,
@@ -216,18 +170,7 @@ export async function runUrlFlow({
         : null,
   });
 
-  let stopped = false;
-  const stopProgress = () => {
-    if (stopped) return;
-    stopped = true;
-    websiteProgress?.stop?.();
-    spinner.stopAndClear();
-    oscProgress.clear();
-  };
-  const pauseProgressLine = () => {
-    spinner.pause();
-    return () => spinner.resume();
-  };
+  const pauseProgressLine = pauseProgress;
   hooks.setClearProgressBeforeStdout(pauseProgressLine);
   try {
     const buildFetchOptions = (): FetchLinkContentOptions => ({
@@ -299,7 +242,12 @@ export async function runUrlFlow({
           env: io.env,
         });
         if (cacheKey && cacheStore) {
-          cacheStore.setJson("extract", cacheKey, extracted, cacheState.ttlMs);
+          // Use a short TTL for extracts with unavailable transcripts so that
+          // transient transcript failures (e.g. Apify timeouts) are retried on the
+          // next run instead of being served from cache for the full default TTL.
+          const extractTtlMs =
+            extracted.transcriptSource === "unavailable" ? NEGATIVE_TTL_MS : cacheState.ttlMs;
+          cacheStore.setJson("extract", cacheKey, extracted, extractTtlMs);
           writeVerbose(
             io.stderr,
             flags.verbose,
@@ -416,7 +364,7 @@ export async function runUrlFlow({
       clearProgressForStdout: hooks.clearProgressForStdout,
       restoreProgressAfterStdout: hooks.restoreProgressAfterStdout ?? null,
       onProgressText: flags.progressEnabled
-        ? (text) => spinner.setText(renderStatusFromText(text))
+        ? (text) => progressStatus.setSlides(renderStatusFromText(text))
         : null,
     });
 
@@ -430,6 +378,7 @@ export async function runUrlFlow({
       };
       hooks.onSlidesDone = (result) => {
         existingSlidesDone?.(result);
+        progressStatus.clearSlides();
         slidesOutput.onSlidesDone(result);
       };
       hooks.onSlideChunk = (chunk) => {
@@ -441,6 +390,7 @@ export async function runUrlFlow({
     const markSlidesDone = (result: { ok: boolean; error?: string | null }) => {
       if (slidesDone) return;
       slidesDone = true;
+      progressStatus.clearSlides();
       hooks.onSlidesDone?.(result);
     };
 
@@ -488,8 +438,7 @@ export async function runUrlFlow({
           );
         }
         if (flags.progressEnabled) {
-          spinner.setText(renderStatus("Extracting slides"));
-          oscProgress.setIndeterminate("Extracting slides");
+          progressStatus.setSlides(renderStatus("Extracting slides"));
         }
         // Prefer indeterminate progress until we get real percentage updates from the slide pipeline.
         ctx.hooks.onSlidesProgress?.("Slides: extracting");
@@ -568,15 +517,13 @@ export async function runUrlFlow({
     const updateSummaryProgress = () => {
       if (!flags.progressEnabled) return;
       websiteProgress?.stop?.();
-      if (!flags.extractMode) {
-        oscProgress.setIndeterminate("Summarizing");
-      }
-      spinner.setText(
+      progressStatus.setSummary(
         flags.extractMode
           ? `${styleLabel("Extracted")}${styleDim(
               ` (${extractionUi.contentSizeLabel}${extractionUi.viaSourceLabel})`,
             )}`
           : formatSummaryProgress(),
+        flags.extractMode ? null : "Summarizing",
       );
     };
 
@@ -680,6 +627,7 @@ export async function runUrlFlow({
       void runSlidesExtraction().catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         ctx.hooks.onSlidesProgress?.(`Slides: failed (${message})`);
+        writeSlidesBackgroundFailureWarning({ ctx, theme, message });
         writeVerbose(
           io.stderr,
           flags.verbose,
@@ -765,7 +713,7 @@ export async function runUrlFlow({
     const onModelChosen = (modelId: string) => {
       hooks.onModelChosen?.(modelId);
       if (!flags.progressEnabled) return;
-      spinner.setText(formatSummaryProgress(modelId));
+      progressStatus.setSummary(formatSummaryProgress(modelId), "Summarizing");
     };
 
     await summarizeExtractedUrl({

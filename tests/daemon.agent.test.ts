@@ -1,15 +1,24 @@
-import type { AssistantMessage, Tool } from "@mariozechner/pi-ai";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage, Tool } from "@mariozechner/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { completeAgentResponse } from "../src/daemon/agent.js";
+import { runCliModel } from "../src/llm/cli.js";
 import * as modelAuto from "../src/model-auto.js";
 
 const { mockCompleteSimple, mockGetModel } = vi.hoisted(() => ({
   mockCompleteSimple: vi.fn(),
   mockGetModel: vi.fn(),
 }));
+
+vi.mock("../src/llm/cli.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/llm/cli.js")>();
+  return {
+    ...actual,
+    runCliModel: vi.fn(async () => ({ text: "cli agent", usage: null, costUsd: null })),
+  };
+});
 
 vi.mock("@mariozechner/pi-ai", () => {
   return {
@@ -51,9 +60,19 @@ const makeModel = (provider: string, modelId: string) => ({
 
 const makeTempHome = () => mkdtempSync(join(tmpdir(), "summarize-daemon-agent-"));
 
+const makeFakeCliBin = (binary: string) => {
+  const dir = mkdtempSync(join(tmpdir(), `summarize-daemon-cli-${binary}-`));
+  const file = join(dir, binary);
+  writeFileSync(file, "#!/bin/sh\nexit 0\n");
+  chmodSync(file, 0o755);
+  return { dir, file };
+};
+
 beforeEach(() => {
   mockCompleteSimple.mockReset();
   mockGetModel.mockReset();
+  vi.mocked(runCliModel).mockReset();
+  vi.mocked(runCliModel).mockResolvedValue({ text: "cli agent", usage: null, costUsd: null });
   mockGetModel.mockImplementation((provider: string, modelId: string) =>
     makeModel(provider, modelId),
   );
@@ -144,7 +163,13 @@ describe("daemon/agent", () => {
     });
 
     const context = mockCompleteSimple.mock.calls[0]?.[1] as { tools?: Tool[] };
-    expect(context.tools?.some((tool) => tool.name === "artifacts")).toBe(true);
+    const artifacts = context.tools?.find((tool) => tool.name === "artifacts");
+    expect(artifacts).toBeTruthy();
+    const properties = (artifacts?.parameters as { properties?: Record<string, unknown> })
+      ?.properties;
+    const content = properties?.content as { type?: unknown; description?: string } | undefined;
+    expect(content?.type).toBe("string");
+    expect(content?.description).toMatch(/serialized JSON as a string/i);
   });
 
   it("navigate tool exposes listTabs and switchToTab parameters", async () => {
@@ -200,6 +225,117 @@ describe("daemon/agent", () => {
 
       const options = mockCompleteSimple.mock.calls[0]?.[2] as { apiKey?: string };
       expect(options.apiKey).toBe("sk-openrouter-via-openai");
+    } finally {
+      autoSpy.mockRestore();
+    }
+  });
+
+  it("runs fixed CLI agent models through the CLI transport", async () => {
+    const home = makeTempHome();
+
+    const assistant = await completeAgentResponse({
+      env: { HOME: home },
+      pageUrl: "https://example.com",
+      pageTitle: "Example",
+      pageContent: "Hello world",
+      messages: [{ role: "user", content: "Hi" }],
+      modelOverride: "cli/codex/gpt-5.2",
+      tools: [],
+      automationEnabled: false,
+    });
+
+    expect(runCliModel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "codex",
+        model: "gpt-5.2",
+        allowTools: false,
+      }),
+    );
+    const args = vi.mocked(runCliModel).mock.calls[0]?.[0] as { prompt: string };
+    expect(args.prompt).toContain("You are Summarize Chat, not Claude.");
+    expect(args.prompt).toContain("User: Hi");
+    expect(mockCompleteSimple).not.toHaveBeenCalled();
+    expect(assistant.content).toBe("cli agent");
+  });
+
+  it("falls back to CLI auto attempts when no API-key agent model is available", async () => {
+    const home = makeTempHome();
+    const fakeCodex = makeFakeCliBin("codex");
+    const autoSpy = vi.spyOn(modelAuto, "buildAutoModelAttempts").mockReturnValue([
+      {
+        transport: "cli",
+        userModelId: "cli/codex/gpt-5.2",
+        llmModelId: null,
+        openrouterProviders: null,
+        forceOpenRouter: false,
+        requiredEnv: "CLI_CODEX",
+        debug: "cli fallback",
+      },
+    ]);
+
+    try {
+      const assistant = await completeAgentResponse({
+        env: { HOME: home, PATH: fakeCodex.dir },
+        pageUrl: "https://example.com",
+        pageTitle: null,
+        pageContent: "Hello world",
+        messages: [{ role: "user", content: "Hi" }],
+        modelOverride: null,
+        tools: [],
+        automationEnabled: false,
+      });
+
+      expect(runCliModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.2",
+        }),
+      );
+      expect(mockCompleteSimple).not.toHaveBeenCalled();
+      expect(assistant.content).toBe("cli agent");
+    } finally {
+      autoSpy.mockRestore();
+    }
+  });
+
+  it("explains missing env and CLI availability when no auto agent model is usable", async () => {
+    const home = makeTempHome();
+    const autoSpy = vi.spyOn(modelAuto, "buildAutoModelAttempts").mockReturnValue([
+      {
+        transport: "native",
+        userModelId: "google/gemini-3-flash",
+        llmModelId: "google/gemini-3-flash",
+        openrouterProviders: null,
+        forceOpenRouter: false,
+        requiredEnv: "GEMINI_API_KEY",
+        debug: "google first",
+      },
+      {
+        transport: "cli",
+        userModelId: "cli/codex/gpt-5.2",
+        llmModelId: null,
+        openrouterProviders: null,
+        forceOpenRouter: false,
+        requiredEnv: "CLI_CODEX",
+        debug: "cli fallback",
+      },
+    ]);
+
+    try {
+      await expect(
+        completeAgentResponse({
+          env: { HOME: home, PATH: "" },
+          pageUrl: "https://example.com",
+          pageTitle: null,
+          pageContent: "Hello world",
+          messages: [{ role: "user", content: "Hi" }],
+          modelOverride: null,
+          tools: [],
+          automationEnabled: false,
+        }),
+      ).rejects.toThrow(
+        /No model available for agent\..*Checked: google\/gemini-3-flash, cli\/codex\/gpt-5\.2\..*Missing env: GEMINI_API_KEY\..*CLI unavailable: codex\..*Restart or reinstall the daemon/i,
+      );
     } finally {
       autoSpy.mockRestore();
     }

@@ -1,5 +1,3 @@
-import type { ModelAttempt } from "../../types.js";
-import type { UrlFlowContext } from "./types.js";
 import { createHtmlToMarkdownConverter } from "../../../llm/html-to-markdown.js";
 import { parseGatewayStyleModelId } from "../../../llm/model-id.js";
 import {
@@ -9,6 +7,8 @@ import {
 import { convertToMarkdownWithMarkitdown } from "../../../markitdown.js";
 import { hasUvxCli } from "../../env.js";
 import { createRetryLogger } from "../../logging.js";
+import type { ModelAttempt } from "../../types.js";
+import type { UrlFlowContext } from "./types.js";
 
 export type MarkdownModel = {
   llmModelId: string;
@@ -98,7 +98,7 @@ export function createMarkdownConverters(
     // Otherwise pick a safe, broadly-capable default for HTML→Markdown conversion.
     if (ctx.model.apiStatus.googleConfigured) {
       return {
-        llmModelId: "google/gemini-3-flash-preview",
+        llmModelId: "google/gemini-3-flash",
         forceOpenRouter: false,
         requiredEnv: "GEMINI_API_KEY",
       };

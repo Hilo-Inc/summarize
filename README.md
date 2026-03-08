@@ -1,14 +1,8 @@
 # Summarize 📝 — Chrome Side Panel + CLI
 
-![GitHub Repo Banner](https://ghrb.waren.build/banner?header=Summarize%F0%9F%93%9D&subheader=Chrome+Side+Panel+%2B+CLI&bg=f3f4f6&color=1f2937&support=true)
-
-<!-- Created with GitHub Repo Banner by Waren Gonzaga: https://ghrb.waren.build -->
-
 Fast summaries from URLs, files, and media. Works in the terminal, a Chrome Side Panel and Firefox Sidebar.
 
-**0.11.0 preview (unreleased):** this README reflects the upcoming release.
-
-## 0.11.0 preview highlights (most interesting first)
+## Highlights
 
 - Chrome Side Panel **chat** (streaming agent + history) inside the sidebar.
 - **YouTube slides**: screenshots + OCR + transcript cards, timestamped seek, OCR/Transcript toggle.
@@ -20,7 +14,7 @@ Fast summaries from URLs, files, and media. Works in the terminal, a Chrome Side
 
 - URLs, files, and media: web pages, PDFs, images, audio/video, YouTube, podcasts, RSS.
 - Slide extraction for video sources (YouTube/direct media) with OCR + timestamped cards.
-- Transcript-first media flow: published transcripts when available, Whisper fallback when not.
+- Transcript-first media flow: published transcripts when available, then Groq/ONNX/whisper.cpp/AssemblyAI/Gemini/OpenAI/FAL transcription fallback when not.
 - Streaming output with Markdown rendering, metrics, and cache-aware status.
 - Local, paid, and free models: OpenAI‑compatible local endpoints, paid providers, plus an OpenRouter free preset.
 - Output modes: Markdown/text, JSON diagnostics, extract-only, metrics, timing, and cost estimates.
@@ -58,7 +52,7 @@ Notes:
 
 - Summarization only runs when the Side Panel is open.
 - Auto mode summarizes on navigation (incl. SPAs); otherwise use the button.
-- Daemon is localhost-only and requires a shared token.
+- Daemon is localhost-only and requires a shared token; rerunning `summarize daemon install --token <TOKEN>` adds another paired browser token instead of invalidating the old one.
 - Autostart: macOS (launchd), Linux (systemd user), Windows (Scheduled Task).
 - Tip: configure `free` via `summarize refresh-free` (needs `OPENROUTER_API_KEY`). Add `--set-default` to set model=`free`.
 
@@ -124,7 +118,31 @@ import { createLinkPreviewClient } from "@steipete/summarize-core/content";
 brew install steipete/tap/summarize
 ```
 
-Apple Silicon only (arm64).
+Homebrew availability depends on the current tap formula for your architecture.
+If Homebrew install fails on Intel/x64, use the npm global install above.
+
+### Optional local dependencies
+
+Install these if you want media-heavy features:
+
+- `ffmpeg`: required for `--slides` and many local media/transcription flows
+- `yt-dlp`: required for YouTube slide extraction and some remote media flows
+- `tesseract`: optional OCR for `--slides-ocr`
+- Optional cloud transcription providers:
+  - `GROQ_API_KEY`
+  - `ASSEMBLYAI_API_KEY`
+  - `GEMINI_API_KEY` / `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY`
+  - `OPENAI_API_KEY`
+  - `FAL_KEY`
+
+macOS (Homebrew):
+
+```bash
+brew install ffmpeg yt-dlp
+brew install tesseract # optional, for --slides-ocr
+```
+
+If `--slides` is enabled and these tools are missing, Summarize warns and continues without slides.
 
 ### CLI vs extension
 
@@ -142,8 +160,8 @@ summarize "https://example.com"
 URLs or local paths:
 
 ```bash
-summarize "/path/to/file.pdf" --model google/gemini-3-flash-preview
-summarize "https://example.com/report.pdf" --model google/gemini-3-flash-preview
+summarize "/path/to/file.pdf" --model google/gemini-3-flash
+summarize "https://example.com/report.pdf" --model google/gemini-3-flash
 summarize "/path/to/audio.mp3"
 summarize "/path/to/video.mp4"
 ```
@@ -245,7 +263,7 @@ Examples:
 - `openai/gpt-5-mini`
 - `anthropic/claude-sonnet-4-5`
 - `xai/grok-4-fast-non-reasoning`
-- `google/gemini-3-flash-preview`
+- `google/gemini-3-flash`
 - `zai/glm-4.7`
 - `openrouter/openai/gpt-5-mini` (force OpenRouter)
 
@@ -390,7 +408,8 @@ Non-YouTube URLs go through a fetch -> extract pipeline. When direct fetch/extra
 
 1. Apify (if `APIFY_API_TOKEN` is set): uses a scraping actor (`faVsWy9VTSNVIhWpR`)
 2. yt-dlp + Whisper (if `yt-dlp` is available): downloads audio, then transcribes with local `whisper.cpp` when installed
-   (preferred), otherwise falls back to OpenAI (`OPENAI_API_KEY`) or FAL (`FAL_KEY`)
+   (preferred), otherwise falls back to Groq (`GROQ_API_KEY`), AssemblyAI (`ASSEMBLYAI_API_KEY`), Gemini
+   (`GEMINI_API_KEY` / Google aliases), OpenAI (`OPENAI_API_KEY`), then FAL (`FAL_KEY`)
 
 Environment variables for yt-dlp mode:
 
@@ -398,6 +417,9 @@ Environment variables for yt-dlp mode:
 - `SUMMARIZE_WHISPER_CPP_MODEL_PATH` - optional override for the local `whisper.cpp` model file
 - `SUMMARIZE_WHISPER_CPP_BINARY` - optional override for the local binary (default: `whisper-cli`)
 - `SUMMARIZE_DISABLE_LOCAL_WHISPER_CPP=1` - disable local whisper.cpp (force remote)
+- `GROQ_API_KEY` - Groq Whisper transcription
+- `ASSEMBLYAI_API_KEY` - AssemblyAI transcription
+- `GEMINI_API_KEY` - Gemini transcription (`GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` also work)
 - `OPENAI_API_KEY` - OpenAI Whisper transcription
 - `OPENAI_WHISPER_BASE_URL` - optional OpenAI-compatible Whisper endpoint override
 - `FAL_KEY` - FAL AI Whisper fallback
@@ -407,6 +429,12 @@ Apify costs money but tends to be more reliable when captions exist.
 ### Slide extraction (YouTube + direct video URLs)
 
 Extract slide screenshots (scene detection via `ffmpeg`) and optional OCR:
+
+Requirements:
+
+- `ffmpeg` for scene detection and frame extraction
+- `yt-dlp` for YouTube video download/stream resolution
+- `tesseract` only when using `--slides-ocr`
 
 ```bash
 summarize "https://www.youtube.com/watch?v=..." --slides
@@ -433,7 +461,7 @@ summarize "https://www.youtube.com/watch?v=..." --extract --format md --markdown
 
 Local audio/video files are transcribed first, then summarized. `--video-mode transcript` forces
 direct media URLs (and embedded media) through Whisper first. Prefers local `whisper.cpp` when available; otherwise requires
-`OPENAI_API_KEY` or `FAL_KEY`.
+one of `GROQ_API_KEY`, `ASSEMBLYAI_API_KEY`, `GEMINI_API_KEY` (or Google aliases), `OPENAI_API_KEY`, or `FAL_KEY`.
 
 ### Local ONNX transcription (Parakeet/Canary)
 
@@ -457,7 +485,7 @@ Run: `summarize <url>`
 - RSS feeds (Podcasting 2.0 transcripts when available)
 - Embedded YouTube podcast pages (e.g. JREPodcast)
 
-Transcription: prefers local `whisper.cpp` when installed; otherwise uses OpenAI Whisper or FAL when keys are set.
+Transcription: prefers local `whisper.cpp` when installed; otherwise uses Groq, AssemblyAI, Gemini, OpenAI, or FAL when keys are set.
 
 ### Translation paths
 
@@ -471,7 +499,7 @@ When the input is audio/video, the CLI needs a transcript first. The transcript 
 2. Whisper transcription (fallback)
    - YouTube: falls back to yt-dlp (audio download) + Whisper transcription when configured; Apify is a last resort.
    - Prefers local `whisper.cpp` when installed + model available.
-   - Otherwise uses cloud Whisper (OpenAI `OPENAI_API_KEY`) or FAL (`FAL_KEY`).
+   - Otherwise uses cloud transcription in this order: Groq (`GROQ_API_KEY`) → AssemblyAI (`ASSEMBLYAI_API_KEY`) → Gemini (`GEMINI_API_KEY` / Google aliases) → OpenAI (`OPENAI_API_KEY`) → FAL (`FAL_KEY`).
 
 For direct media URLs, use `--video-mode transcript` to force transcribe -> summarize:
 
@@ -648,6 +676,10 @@ Optional services:
 
 - `FIRECRAWL_API_KEY` (website extraction fallback)
 - `YT_DLP_PATH` (path to yt-dlp binary for audio extraction)
+- `GROQ_API_KEY` (Groq Whisper transcription)
+- `ASSEMBLYAI_API_KEY` (AssemblyAI transcription)
+- `GEMINI_API_KEY` / `GOOGLE_GENERATIVE_AI_API_KEY` / `GOOGLE_API_KEY` (Gemini transcription)
+- `OPENAI_API_KEY` / `OPENAI_WHISPER_BASE_URL` (OpenAI Whisper transcription)
 - `FAL_KEY` (FAL AI API key for audio transcription via Whisper)
 - `APIFY_API_TOKEN` (YouTube transcript fallback)
 

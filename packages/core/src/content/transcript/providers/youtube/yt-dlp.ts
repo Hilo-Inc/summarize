@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MediaCache } from "../../../cache/types.js";
-import type { LinkPreviewProgressEvent } from "../../../link-preview/deps.js";
 import { spawnTracked } from "../../../../processes.js";
 import {
   probeMediaDurationSecondsWithFfprobe,
   type TranscriptionProvider,
   transcribeMediaFileWithWhisper,
 } from "../../../../transcription/whisper.js";
+import { buildMissingTranscriptionProviderMessage } from "../../../../transcription/whisper/provider-setup.js";
+import type { MediaCache } from "../../../cache/types.js";
+import type { LinkPreviewProgressEvent } from "../../../link-preview/deps.js";
 import { ProgressKind } from "../../../link-preview/deps.js";
 import {
   resolveTranscriptionConfig,
@@ -34,6 +35,8 @@ type YtDlpRequest = {
   transcription?: Partial<TranscriptionConfig> | null;
   env?: Record<string, string | undefined>;
   groqApiKey?: string | null;
+  assemblyaiApiKey?: string | null;
+  geminiApiKey?: string | null;
   openaiApiKey?: string | null;
   falApiKey?: string | null;
   url: string;
@@ -54,6 +57,8 @@ export const fetchTranscriptWithYtDlp = async ({
   transcription,
   env,
   groqApiKey,
+  assemblyaiApiKey,
+  geminiApiKey,
   openaiApiKey,
   falApiKey,
   url,
@@ -68,6 +73,8 @@ export const fetchTranscriptWithYtDlp = async ({
     env,
     transcription,
     groqApiKey,
+    assemblyaiApiKey,
+    geminiApiKey,
     openaiApiKey,
     falApiKey,
   });
@@ -89,9 +96,7 @@ export const fetchTranscriptWithYtDlp = async ({
     return {
       text: null,
       provider: null,
-      error: new Error(
-        "No transcription providers available (install whisper-cpp or set GROQ_API_KEY, OPENAI_API_KEY, or FAL_KEY)",
-      ),
+      error: new Error(buildMissingTranscriptionProviderMessage()),
       notes,
     };
   }
@@ -190,6 +195,8 @@ export const fetchTranscriptWithYtDlp = async ({
       mediaType: "audio/mpeg",
       filename: "audio.mp3",
       groqApiKey: effectiveTranscription.groqApiKey,
+      assemblyaiApiKey: effectiveTranscription.assemblyaiApiKey,
+      geminiApiKey: effectiveTranscription.geminiApiKey,
       openaiApiKey: effectiveTranscription.openaiApiKey,
       falApiKey: effectiveTranscription.falApiKey,
       totalDurationSeconds: probedDurationSeconds,

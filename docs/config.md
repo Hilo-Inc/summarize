@@ -56,7 +56,7 @@ For UI theme:
 
 ```json
 {
-  "model": { "id": "google/gemini-3-flash-preview" },
+  "model": { "id": "google/gemini-3-flash" },
   "env": { "OPENAI_API_KEY": "sk-..." },
   "output": { "language": "auto" },
   "prompt": "Explain like I am five.",
@@ -68,7 +68,7 @@ Shorthand (equivalent):
 
 ```json
 {
-  "model": "google/gemini-3-flash-preview"
+  "model": "google/gemini-3-flash"
 }
 ```
 
@@ -107,6 +107,7 @@ Set any env var in config (process env still wins):
 ```json
 {
   "env": {
+    "ASSEMBLYAI_API_KEY": "...",
     "OPENAI_API_KEY": "sk-...",
     "OPENROUTER_API_KEY": "sk-or-...",
     "FIRECRAWL_API_KEY": "...",
@@ -121,6 +122,8 @@ Legacy shortcut (still supported):
 {
   "apiKeys": {
     "openai": "sk-...",
+    "groq": "gsk-...",
+    "assemblyai": "...",
     "anthropic": "sk-ant-...",
     "google": "...",
     "openrouter": "sk-or-...",
@@ -260,7 +263,7 @@ For auto selection with rules:
     "rules": [
       {
         "when": ["video"],
-        "candidates": ["google/gemini-3-flash-preview"]
+        "candidates": ["google/gemini-3-flash"]
       },
       {
         "when": ["website", "youtube"],
@@ -362,7 +365,8 @@ Override API endpoints for any provider to use proxies, gateways, or compatible 
   "nvidia": { "baseUrl": "https://integrate.api.nvidia.com/v1" },
   "anthropic": { "baseUrl": "https://my-anthropic-proxy.example.com" },
   "google": { "baseUrl": "https://my-google-proxy.example.com" },
-  "xai": { "baseUrl": "https://my-xai-proxy.example.com" }
+  "xai": { "baseUrl": "https://my-xai-proxy.example.com" },
+  "zai": { "baseUrl": "https://api.zhipuai.cn/paas/v4" }
 }
 ```
 
@@ -375,3 +379,4 @@ Or via environment variables (which take precedence over config):
 | Anthropic | `ANTHROPIC_BASE_URL`                         |
 | Google    | `GOOGLE_BASE_URL` (alias: `GEMINI_BASE_URL`) |
 | xAI       | `XAI_BASE_URL`                               |
+| Z.AI      | `Z_AI_BASE_URL` (alias: `ZAI_BASE_URL`)      |

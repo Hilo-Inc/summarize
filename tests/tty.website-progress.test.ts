@@ -50,16 +50,17 @@ describe("tty website progress", () => {
     expect(progress).not.toBeNull();
     if (!progress) return;
 
-    progress.onProgress({ kind: "bird-start", url: "https://x.com/test/status/1" });
-    expect(setText).toHaveBeenLastCalledWith("Bird: reading tweet…");
+    progress.onProgress({ kind: "bird-start", url: "https://x.com/test/status/1", client: null });
+    expect(setText).toHaveBeenLastCalledWith("X: reading tweet…");
 
     progress.onProgress({
       kind: "bird-done",
       url: "https://x.com/test/status/1",
+      client: "xurl",
       ok: false,
       textBytes: null,
     });
-    expect(setText).toHaveBeenLastCalledWith("Bird: failed; fallback…");
+    expect(setText).toHaveBeenLastCalledWith("Xurl: failed; fallback…");
 
     progress.onProgress({ kind: "nitter-start", url: "https://x.com/test/status/1" });
     expect(setText).toHaveBeenLastCalledWith("Nitter: fetching…");
@@ -209,6 +210,32 @@ describe("tty website progress", () => {
       expect.stringContaining("Whisper/OpenAI→FAL, whisper-1->fal-ai/wizper"),
     );
     expect(setText).toHaveBeenLastCalledWith(expect.stringContaining("44s"));
+
+    progress.onProgress({
+      kind: "transcript-whisper-start",
+      url: "https://podcasts.example/episode",
+      service: "podcast",
+      providerHint: "assemblyai",
+      modelId: "assemblyai/universal-2",
+      totalDurationSeconds: 25,
+      parts: null,
+    });
+    expect(setText).toHaveBeenLastCalledWith(
+      expect.stringContaining("AssemblyAI, assemblyai/universal-2"),
+    );
+
+    progress.onProgress({
+      kind: "transcript-whisper-start",
+      url: "https://podcasts.example/episode",
+      service: "podcast",
+      providerHint: "gemini",
+      modelId: "google/gemini-2.5-flash",
+      totalDurationSeconds: 30,
+      parts: null,
+    });
+    expect(setText).toHaveBeenLastCalledWith(
+      expect.stringContaining("Gemini, google/gemini-2.5-flash"),
+    );
 
     progress.onProgress({
       kind: "transcript-whisper-start",

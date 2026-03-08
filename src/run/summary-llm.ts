@@ -1,7 +1,7 @@
-import type { parseGatewayStyleModelId } from "../llm/model-id.js";
-import type { Prompt } from "../llm/prompt.js";
 import { generateTextWithModelId } from "../llm/generate-text.js";
 import { resolveGoogleModelForUsage } from "../llm/google-models.js";
+import type { parseGatewayStyleModelId } from "../llm/model-id.js";
+import type { Prompt } from "../llm/prompt.js";
 
 export async function resolveModelIdForLlmCall({
   parsedModel,
@@ -51,6 +51,7 @@ export async function summarizeWithModelId({
   anthropicBaseUrlOverride,
   googleBaseUrlOverride,
   xaiBaseUrlOverride,
+  zaiBaseUrlOverride,
   forceChatCompletions,
   retries,
   onRetry,
@@ -72,6 +73,7 @@ export async function summarizeWithModelId({
   anthropicBaseUrlOverride?: string | null;
   googleBaseUrlOverride?: string | null;
   xaiBaseUrlOverride?: string | null;
+  zaiBaseUrlOverride?: string | null;
   forceChatCompletions?: boolean;
   retries: number;
   onRetry?: (notice: {
@@ -94,6 +96,7 @@ export async function summarizeWithModelId({
     anthropicBaseUrlOverride,
     googleBaseUrlOverride,
     xaiBaseUrlOverride,
+    zaiBaseUrlOverride,
     forceChatCompletions,
     prompt,
     temperature: 0,
