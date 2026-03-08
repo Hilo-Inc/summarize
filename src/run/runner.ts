@@ -268,6 +268,7 @@ export async function runCli(
   const noMediaCacheFlag = program.opts().mediaCache === false;
   const extractMode = Boolean(program.opts().extract) || Boolean(program.opts().extractOnly);
   const json = Boolean(program.opts().json);
+  const outputDir = typeof program.opts().output === "string" ? program.opts().output : null;
   const forceSummary = Boolean(program.opts().forceSummary);
   const slidesDebug = Boolean(program.opts().slidesDebug);
   const streamMode = parseStreamMode(program.opts().stream as string);
@@ -888,6 +889,7 @@ export async function runCli(
         slides: slidesSettings,
         slidesDebug,
         slidesOutput: true,
+        outputDir,
       },
       model: {
         requestedModel,

@@ -1,4 +1,6 @@
-import { isTwitterStatusUrl, isYouTubeUrl } from "@steipete/summarize-core/content/url";
+import { extractYouTubeVideoId, isTwitterStatusUrl, isYouTubeUrl } from "@steipete/summarize-core/content/url";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { countTokens } from "gpt-tokenizer";
 import { render as renderMarkdownAnsi } from "markdansi";
 import type { ExtractedLinkContent } from "../../../content/index.js";
@@ -50,6 +52,31 @@ type SlidesResult = Awaited<
 >;
 
 type TranscriptSegment = { startSeconds: number; text: string };
+
+async function writeOutputFile({
+  outputDir,
+  url,
+  payload,
+  stderr,
+}: {
+  outputDir: string;
+  url: string;
+  payload: Record<string, unknown>;
+  stderr: NodeJS.WritableStream;
+}): Promise<void> {
+  const videoId = extractYouTubeVideoId(url);
+  const baseName = videoId ?? hashString(url).slice(0, 12);
+  await fs.mkdir(outputDir, { recursive: true });
+  const filePath = path.join(outputDir, `${baseName}.json`);
+  const outputPayload = {
+    videoId: videoId ?? null,
+    url,
+    summarizedAt: new Date().toISOString(),
+    ...payload,
+  };
+  await fs.writeFile(filePath, JSON.stringify(outputPayload, null, 2) + "\n", "utf8");
+  stderr.write(`Saved to ${filePath}\n`);
+}
 
 const MAX_SLIDE_TRANSCRIPT_CHARS_BY_PRESET = {
   short: 2500,
@@ -314,6 +341,9 @@ async function outputSummaryFromExtractedContent({
       summary: extracted.content,
     };
     io.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (flags.outputDir) {
+      await writeOutputFile({ outputDir: flags.outputDir, url, payload, stderr: io.stderr });
+    }
     if (flags.metricsEnabled && finishReport) {
       const costUsd = await hooks.estimateCostUsd();
       hooks.clearProgressForStdout();
@@ -335,6 +365,17 @@ async function outputSummaryFromExtractedContent({
       });
     }
     return;
+  }
+
+  if (flags.outputDir) {
+    const outputPayloadForExtract = {
+      title: extracted.title,
+      siteName: extracted.siteName,
+      transcriptSource: extracted.transcriptSource,
+      mediaDurationSeconds: extracted.mediaDurationSeconds,
+      summary: extracted.content,
+    };
+    await writeOutputFile({ outputDir: flags.outputDir, url, payload: outputPayloadForExtract, stderr: io.stderr });
   }
 
   io.stdout.write(`${extracted.content}\n`);
@@ -468,6 +509,9 @@ export async function outputExtractedUrl({
       summary: null,
     };
     io.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (flags.outputDir) {
+      await writeOutputFile({ outputDir: flags.outputDir, url, payload, stderr: io.stderr });
+    }
     hooks.restoreProgressAfterStdout?.();
     hooks.restoreProgressAfterStdout?.();
     if (flags.metricsEnabled && finishReport) {
@@ -1029,6 +1073,9 @@ export async function summarizeExtractedUrl({
       summary: normalizedSummary,
     };
     io.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    if (flags.outputDir) {
+      await writeOutputFile({ outputDir: flags.outputDir, url, payload, stderr: io.stderr });
+    }
     if (flags.metricsEnabled && finishReport) {
       const costUsd = await hooks.estimateCostUsd();
       writeFinishLine({
@@ -1050,6 +1097,18 @@ export async function summarizeExtractedUrl({
       });
     }
     return;
+  }
+
+  if (flags.outputDir) {
+    const outputPayloadForSummary = {
+      title: extracted.title,
+      siteName: extracted.siteName,
+      transcriptSource: extracted.transcriptSource,
+      mediaDurationSeconds: extracted.mediaDurationSeconds,
+      model: usedAttempt.userModelId,
+      summary: normalizedSummary,
+    };
+    await writeOutputFile({ outputDir: flags.outputDir, url, payload: outputPayloadForSummary, stderr: io.stderr });
   }
 
   if (slidesOutput) {

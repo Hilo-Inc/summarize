@@ -171,6 +171,13 @@ YouTube (supports `youtube.com` and `youtu.be`):
 summarize "https://youtu.be/dQw4w9WgXcQ" --youtube auto
 ```
 
+Save summary to a file (auto-named `<videoId>.json` with metadata):
+
+```bash
+summarize "https://www.youtube.com/watch?v=kZbMABuzn9U" --youtube yt-dlp --output .
+summarize "https://www.youtube.com/watch?v=kZbMABuzn9U" --youtube yt-dlp -o ./summaries
+```
+
 Podcast RSS (transcribes latest enclosure):
 
 ```bash
@@ -282,6 +289,7 @@ Use `summarize --help` or `summarize help` for the full help text.
 - `--slides-scene-threshold <value>`: scene detection threshold (0.1-1.0)
 - `--slides-max <count>`: maximum slides to extract (default `6`)
 - `--slides-min-duration <seconds>`: minimum seconds between slides
+- `-o, --output <dir>`: write summary JSON to a file in `<dir>`, auto-named by YouTube video ID or URL hash (includes metadata)
 - `--json`: machine-readable output with diagnostics, prompt, `metrics`, and optional summary
 - `--verbose`: debug/diagnostics on stderr
 - `--metrics off|on|detailed`: metrics output (default `on`)

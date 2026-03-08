@@ -133,6 +133,11 @@ export function buildProgram() {
     .addOption(new Option("--extract-only", "Deprecated alias for --extract").hideHelp())
     .option("--json", "Output structured JSON (includes prompt + metrics)", false)
     .option(
+      "-o, --output <dir>",
+      "Write summary JSON to a file in <dir>, auto-named by YouTube video ID or URL hash (includes metadata).",
+      undefined,
+    )
+    .option(
       "--stream <mode>",
       "Stream LLM output: auto (TTY only), on, off. Note: streaming is disabled in --json mode.",
       "auto",
