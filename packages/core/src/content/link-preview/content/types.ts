@@ -41,6 +41,7 @@ export interface ExtractedLinkContent {
   title: string | null;
   description: string | null;
   siteName: string | null;
+  channel: string | null;
   content: string;
   truncated: boolean;
   totalCharacters: number;
@@ -66,6 +67,7 @@ export interface FinalizationArguments {
   title: string | null;
   description: string | null;
   siteName: string | null;
+  channel?: string | null;
   transcriptResolution: TranscriptResolution;
   video: { kind: "youtube" | "direct"; url: string } | null;
   isVideoOnly: boolean;

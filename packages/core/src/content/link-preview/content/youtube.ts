@@ -54,7 +54,7 @@ function extractBalancedJsonObject(source: string, startAt: number): string | nu
   return null;
 }
 
-export function extractYouTubeShortDescription(html: string): string | null {
+function extractVideoDetails(html: string): Record<string, unknown> | null {
   const tokenIndex = html.indexOf("ytInitialPlayerResponse");
   if (tokenIndex < 0) {
     return null;
@@ -77,14 +77,34 @@ export function extractYouTubeShortDescription(html: string): string | null {
     if (!videoDetails || typeof videoDetails !== "object") {
       return null;
     }
-    const description = (videoDetails as Record<string, unknown>).shortDescription;
-    if (typeof description !== "string") {
-      return null;
-    }
-
-    const normalized = normalizeWhitespace(description);
-    return normalized && normalized.length > 0 ? normalized : null;
+    return videoDetails as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+export function extractYouTubeShortDescription(html: string): string | null {
+  const videoDetails = extractVideoDetails(html);
+  if (!videoDetails) {
+    return null;
+  }
+  const description = videoDetails.shortDescription;
+  if (typeof description !== "string") {
+    return null;
+  }
+  const normalized = normalizeWhitespace(description);
+  return normalized && normalized.length > 0 ? normalized : null;
+}
+
+export function extractYouTubeAuthor(html: string): string | null {
+  const videoDetails = extractVideoDetails(html);
+  if (!videoDetails) {
+    return null;
+  }
+  const author = videoDetails.author;
+  if (typeof author !== "string") {
+    return null;
+  }
+  const normalized = normalizeWhitespace(author);
+  return normalized && normalized.length > 0 ? normalized : null;
 }

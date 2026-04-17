@@ -278,6 +278,7 @@ export async function runUrlFlow({
           description: null,
           url: targetUrl,
           siteName: null,
+          channel: null,
           wordCount: 0,
           totalCharacters: 0,
           truncated: false,

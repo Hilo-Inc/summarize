@@ -22,7 +22,7 @@ import {
   selectBaseContent,
 } from "./utils.js";
 import { detectPrimaryVideoFromHtml } from "./video.js";
-import { extractYouTubeShortDescription } from "./youtube.js";
+import { extractYouTubeAuthor, extractYouTubeShortDescription } from "./youtube.js";
 
 const LEADING_CONTROL_PATTERN = /^[\s\p{Cc}]+/u;
 
@@ -214,6 +214,8 @@ export async function buildResultFromHtmlDocument({
     baseContent.length < MIN_HTML_CONTENT_CHARACTERS &&
     video !== null;
 
+  const channel = isYouTubeUrl(url) ? extractYouTubeAuthor(html) : null;
+
   return finalizeExtractedLinkContent({
     url,
     baseContent,
@@ -221,6 +223,7 @@ export async function buildResultFromHtmlDocument({
     title: mergedTitle ?? title,
     description: mergedDescription ?? description,
     siteName,
+    channel,
     transcriptResolution,
     video,
     isVideoOnly,

@@ -202,6 +202,7 @@ export async function streamSummaryForVisiblePage({
     title: input.title,
     description: null,
     siteName: guessSiteName(input.url),
+    channel: null,
     content: input.text,
     truncated: input.truncated,
     totalCharacters: input.text.length,

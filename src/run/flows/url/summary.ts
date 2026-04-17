@@ -33,6 +33,62 @@ type SlidesResult = Awaited<
   ReturnType<typeof import("../../../slides/index.js").extractSlidesForSource>
 >;
 
+function slugify(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+function resolveChannelFolder(extracted: {
+  channel?: string | null;
+  siteName?: string | null;
+}): string {
+  const fromChannel = extracted.channel ? slugify(extracted.channel) : "";
+  if (fromChannel) return fromChannel;
+  const fromSite = extracted.siteName ? slugify(extracted.siteName) : "";
+  return fromSite || "unknown";
+}
+
+function buildMarkdownDocument({
+  summarizedAt,
+  url,
+  videoId,
+  extracted,
+  summary,
+  model,
+}: {
+  summarizedAt: string;
+  url: string;
+  videoId: string | null;
+  extracted: { title?: string | null; siteName?: string | null; channel?: string | null };
+  summary: string;
+  model: string | null;
+}): string {
+  const date = summarizedAt.slice(0, 10);
+  const titleForFrontmatter = (extracted.title ?? "Untitled").replace(/"/g, '\\"');
+  const frontmatter = [
+    "---",
+    `title: "${titleForFrontmatter}"`,
+    `channel: ${extracted.channel ?? ""}`,
+    `site: ${extracted.siteName ?? ""}`,
+    `source: ${url}`,
+    videoId ? `videoId: ${videoId}` : null,
+    model ? `model: ${model}` : null,
+    `date: ${date}`,
+    "---",
+    "",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+  const heading = extracted.title ? `# ${extracted.title}\n\n` : "";
+  const body = summary.endsWith("\n") ? summary : `${summary}\n`;
+  return `${frontmatter}${heading}${body}`;
+}
+
 async function writeOutputFile({
   outputDir,
   url,
@@ -46,16 +102,46 @@ async function writeOutputFile({
 }): Promise<void> {
   const videoId = extractYouTubeVideoId(url);
   const baseName = videoId ?? hashString(url).slice(0, 12);
-  await fs.mkdir(outputDir, { recursive: true });
-  const filePath = path.join(outputDir, `${baseName}.json`);
+  const extracted = (payload.extracted as Record<string, unknown> | undefined) ?? payload;
+  const channelFolder = resolveChannelFolder({
+    channel: extracted?.channel as string | null | undefined,
+    siteName: extracted?.siteName as string | null | undefined,
+  });
+  const targetDir = path.join(outputDir, channelFolder);
+  await fs.mkdir(targetDir, { recursive: true });
+
+  const summarizedAt = new Date().toISOString();
+  const filePath = path.join(targetDir, `${baseName}.json`);
   const outputPayload = {
     videoId: videoId ?? null,
     url,
-    summarizedAt: new Date().toISOString(),
+    summarizedAt,
     ...payload,
   };
   await fs.writeFile(filePath, JSON.stringify(outputPayload, null, 2) + "\n", "utf8");
   stderr.write(`Saved to ${filePath}\n`);
+
+  const summaryText =
+    typeof payload.summary === "string" && payload.summary.trim().length > 0
+      ? payload.summary
+      : null;
+  if (summaryText) {
+    const markdownPath = path.join(targetDir, `${baseName}.md`);
+    const markdown = buildMarkdownDocument({
+      summarizedAt,
+      url,
+      videoId,
+      extracted: {
+        title: extracted?.title as string | null | undefined,
+        siteName: extracted?.siteName as string | null | undefined,
+        channel: extracted?.channel as string | null | undefined,
+      },
+      summary: summaryText,
+      model: (payload.model as string | null | undefined) ?? null,
+    });
+    await fs.writeFile(markdownPath, markdown, "utf8");
+    stderr.write(`Saved to ${markdownPath}\n`);
+  }
 }
 
 
@@ -185,6 +271,7 @@ async function outputSummaryFromExtractedContent({
     const outputPayloadForExtract = {
       title: extracted.title,
       siteName: extracted.siteName,
+      channel: extracted.channel,
       transcriptSource: extracted.transcriptSource,
       mediaDurationSeconds: extracted.mediaDurationSeconds,
       summary: extracted.content,
