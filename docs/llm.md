@@ -50,7 +50,7 @@ installed, auto mode can use local CLI models via `cli.enabled` or implicit auto
     - `zai/glm-4.7`
     - `xai/grok-4-fast-non-reasoning`
     - `google/gemini-2.0-flash`
-    - `anthropic/claude-sonnet-4-5`
+    - `anthropic/claude-sonnet-4-6`
     - `openrouter/meta-llama/llama-3.3-70b-instruct:free` (force OpenRouter)
 - `--cli [provider]`
   - Examples: `--cli claude`, `--cli Gemini`, `--cli codex`, `--cli agent` (equivalent to `--model cli/<provider>`); `--cli` alone uses auto selection with CLI enabled.

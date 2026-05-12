@@ -261,7 +261,7 @@ Use gateway-style ids: `<provider>/<model>`.
 Examples:
 
 - `openai/gpt-5-mini`
-- `anthropic/claude-sonnet-4-5`
+- `anthropic/claude-sonnet-4-6`
 - `xai/grok-4-fast-non-reasoning`
 - `google/gemini-3-flash`
 - `zai/glm-4.7`

@@ -79,8 +79,22 @@ export async function completeAnthropicText({
     apiKey,
     signal,
   });
+  const errorMessage =
+    (result as { errorMessage?: unknown }).errorMessage;
+  if (result.stopReason === "error" && typeof errorMessage === "string" && errorMessage.length > 0) {
+    throw new Error(`Anthropic API error for model anthropic/${modelId}: ${errorMessage}`);
+  }
   const text = extractText(result);
-  if (!text) throw new Error(`LLM returned an empty summary (model anthropic/${modelId}).`);
+  if (!text) {
+    if (result.stopReason === "length") {
+      throw new Error(
+        `LLM returned no text for model anthropic/${modelId}: response was truncated by max_tokens before any output was emitted. Try a smaller --length or set --max-output-tokens higher.`,
+      );
+    }
+    throw new Error(
+      `LLM returned an empty summary (model anthropic/${modelId}, stopReason=${result.stopReason ?? "unknown"}).`,
+    );
+  }
   return { text, usage: normalizeTokenUsage(result.usage) };
 }
 

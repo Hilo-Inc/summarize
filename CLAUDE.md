@@ -1,17 +1,132 @@
 # Claude Instructions — Video Summarization Workspace
 
-## Automated CLI Output
+## CLI Commands
 
-When summaries are generated via the CLI with `--output <dir>`, they are automatically written to `<dir>/<channel-slug>/<video-id>.{json,md}`. The channel name is extracted from the YouTube `ytInitialPlayerResponse.videoDetails.author` field; when no channel is known, files land in `<dir>/unknown/`.
+The CLI binary is `summarize` (also aliased as `summarizer`). During development, run via `pnpm s <args>` or `tsx src/cli.ts <args>`.
 
-Run:
+### Basic usage
+
+```bash
+# Summarize a YouTube video with default settings
+summarize https://www.youtube.com/watch?v=VIDEO_ID
+
+# Summarize a web page
+summarize https://example.com/article
+
+# Summarize stdin (text or binary)
+cat transcript.txt | summarize -
+
+# Summarize a local file
+summarize ./path/to/file.pdf
 ```
-summarize <youtube-url> --output notes/videos
+
+### Saving to the notes folder
+
+The `--output` / `-o` flag writes `<outputDir>/<channel-slug>/<videoId>.{json,md}` — channel is auto-extracted from YouTube HTML. If no channel is known, files land in `<outputDir>/unknown/`.
+
+```bash
+# Save to notes/videos/<channel>/<videoId>.{json,md}
+summarize https://www.youtube.com/watch?v=VIDEO_ID -o notes/videos
+
+# Long-form summary saved to notes
+summarize https://www.youtube.com/watch?v=VIDEO_ID --length xxl -o notes/videos
 ```
 
-This produces:
-- `notes/videos/<channel-slug>/<videoId>.json` (raw payload)
-- `notes/videos/<channel-slug>/<videoId>.md` (markdown with frontmatter + summary)
+### Length presets
+
+| Flag | Meaning |
+|------|---------|
+| `--length s` or `--length short` | Short summary |
+| `--length m` or `--length medium` | Medium |
+| `--length l` or `--length long` | Long |
+| `--length xl` | Extra long (default) |
+| `--length xxl` | Maximum |
+| `--length 20k` | ~20,000 character cap |
+
+### Model selection
+
+```bash
+# Use Claude Sonnet 4.6 via Anthropic
+summarize <url> --model anthropic/claude-sonnet-4-6 -o notes/videos
+
+# Use OpenAI
+summarize <url> --model openai/gpt-5-mini -o notes/videos
+
+# Force Claude CLI (agent mode, no API key needed if Claude Code is installed)
+summarize <url> --cli claude -o notes/videos
+
+# Let it auto-pick based on available API keys
+summarize <url> --model auto -o notes/videos
+```
+
+### Transcript source control (YouTube)
+
+```bash
+# Try captions first, fall back to yt-dlp + whisper (default)
+summarize <url> --youtube auto
+
+# Force yt-dlp audio download + whisper transcription
+summarize <url> --youtube yt-dlp
+
+# Only use web captions; skip auto-generated
+summarize <url> --youtube no-auto
+
+# Use Apify transcript API (requires APIFY_TOKEN)
+summarize <url> --youtube apify
+```
+
+### Useful flags
+
+| Flag | Purpose |
+|------|---------|
+| `-o, --output <dir>` | Save `.json` + `.md` into `<dir>/<channel>/<videoId>.*` |
+| `--json` | Emit full JSON payload (prompt, metrics, extraction) to stdout |
+| `--extract` | Print raw extracted text/transcript only, skip LLM |
+| `--timestamps` | Include timestamps in transcripts |
+| `--language en` | Force output language (default: auto-match source) |
+| `--timeout 5m` | Content fetch + LLM timeout (`30s`, `2m`, `5000ms`) |
+| `--verbose` | Print progress to stderr |
+| `--metrics detailed` | Show token counts, costs, timing breakdown |
+| `--no-cache` | Bypass LLM summary cache |
+| `--slides` | Extract slide screenshots from videos (requires ffmpeg) |
+| `--prompt "..."` | Override the summary instruction prefix |
+| `--prompt-file prompt.md` | Read prompt override from a file |
+
+### Slides mode
+
+```bash
+# Extract slides + summary
+summarize <youtube-url> --slides
+
+# Slides with OCR (requires tesseract)
+summarize <youtube-url> --slides --slides-ocr
+
+# Slides-only mode, save images to ./slides/
+summarize slides <youtube-url>
+```
+
+### Cache & maintenance
+
+```bash
+summarize --cache-stats     # Show cache size/hit stats
+summarize --clear-cache     # Delete cache DB and exit
+```
+
+### Typical summarization workflow for this project
+
+```bash
+# 1. Summarize and save
+summarize https://www.youtube.com/watch?v=VIDEO_ID \
+  --length xxl \
+  --model anthropic/claude-sonnet-4-6 \
+  -o notes/videos
+
+# 2. Output lands at:
+#    notes/videos/<channel-slug>/<videoId>.json
+#    notes/videos/<channel-slug>/<videoId>.md
+
+# 3. Update notes/README.md index with the new entry
+```
 
 ## Every Time a Video Is Summarized
 

@@ -120,7 +120,7 @@ export function createMarkdownConverters(
     }
     if (ctx.model.apiStatus.anthropicConfigured) {
       return {
-        llmModelId: "anthropic/claude-sonnet-4-5",
+        llmModelId: "anthropic/claude-sonnet-4-6",
         forceOpenRouter: false,
         requiredEnv: "ANTHROPIC_API_KEY",
       };

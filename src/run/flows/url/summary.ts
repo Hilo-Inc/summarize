@@ -619,6 +619,7 @@ export async function summarizeExtractedUrl({
     const outputPayloadForSummary = {
       title: extracted.title,
       siteName: extracted.siteName,
+      channel: extracted.channel,
       transcriptSource: extracted.transcriptSource,
       mediaDurationSeconds: extracted.mediaDurationSeconds,
       model: usedAttempt.userModelId,
