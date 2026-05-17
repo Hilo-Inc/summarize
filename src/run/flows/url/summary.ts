@@ -89,15 +89,34 @@ function buildMarkdownDocument({
   return `${frontmatter}${heading}${body}`;
 }
 
+function pickRawTranscript(source: {
+  transcriptTimedText?: string | null;
+  transcriptSource?: string | null;
+  content?: string | null;
+}): string | null {
+  const timed = typeof source.transcriptTimedText === "string" ? source.transcriptTimedText.trim() : "";
+  if (timed.length > 0) return timed;
+  const content = typeof source.content === "string" ? source.content : "";
+  if (!source.transcriptSource || content.trim().length === 0) return null;
+  const stripped = content.replace(/^\s*Transcript:\s*\n?/i, "");
+  return stripped.trim().length > 0 ? stripped : null;
+}
+
 async function writeOutputFile({
   outputDir,
   url,
   payload,
+  transcriptSource,
   stderr,
 }: {
   outputDir: string;
   url: string;
   payload: Record<string, unknown>;
+  transcriptSource?: {
+    transcriptTimedText?: string | null;
+    transcriptSource?: string | null;
+    content?: string | null;
+  } | null;
   stderr: NodeJS.WritableStream;
 }): Promise<void> {
   const videoId = extractYouTubeVideoId(url);
@@ -141,6 +160,19 @@ async function writeOutputFile({
     });
     await fs.writeFile(markdownPath, markdown, "utf8");
     stderr.write(`Saved to ${markdownPath}\n`);
+  }
+
+  const rawSource = transcriptSource ?? {
+    transcriptTimedText: extracted?.transcriptTimedText as string | null | undefined,
+    transcriptSource: extracted?.transcriptSource as string | null | undefined,
+    content: extracted?.content as string | null | undefined,
+  };
+  const rawTranscript = pickRawTranscript(rawSource);
+  if (rawTranscript) {
+    const transcriptPath = path.join(targetDir, `${baseName}.transcript.txt`);
+    const body = rawTranscript.endsWith("\n") ? rawTranscript : `${rawTranscript}\n`;
+    await fs.writeFile(transcriptPath, body, "utf8");
+    stderr.write(`Saved to ${transcriptPath}\n`);
   }
 }
 
@@ -276,7 +308,17 @@ async function outputSummaryFromExtractedContent({
       mediaDurationSeconds: extracted.mediaDurationSeconds,
       summary: extracted.content,
     };
-    await writeOutputFile({ outputDir: flags.outputDir, url, payload: outputPayloadForExtract, stderr: io.stderr });
+    await writeOutputFile({
+      outputDir: flags.outputDir,
+      url,
+      payload: outputPayloadForExtract,
+      transcriptSource: {
+        transcriptTimedText: extracted.transcriptTimedText,
+        transcriptSource: extracted.transcriptSource,
+        content: extracted.content,
+      },
+      stderr: io.stderr,
+    });
   }
 
   io.stdout.write(`${extracted.content}\n`);
@@ -625,7 +667,17 @@ export async function summarizeExtractedUrl({
       model: usedAttempt.userModelId,
       summary: normalizedSummary,
     };
-    await writeOutputFile({ outputDir: flags.outputDir, url, payload: outputPayloadForSummary, stderr: io.stderr });
+    await writeOutputFile({
+      outputDir: flags.outputDir,
+      url,
+      payload: outputPayloadForSummary,
+      transcriptSource: {
+        transcriptTimedText: extracted.transcriptTimedText,
+        transcriptSource: extracted.transcriptSource,
+        content: extracted.content,
+      },
+      stderr: io.stderr,
+    });
   }
 
   if (slidesOutput) {
